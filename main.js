@@ -178,7 +178,7 @@ function addJoint(J) {
 }
 function makeMarker(J) { J.marker = new THREE.Mesh(markerGeo, std(0x1f2c45)); scene.add(J.marker); }
 function removeJoint(J) { const k = joints.indexOf(J); if (k >= 0) joints.splice(k, 1); if (J.marker) { scene.remove(J.marker); J.marker = null; } }
-function detachPart(P) { let n = 0; for (const J of [...joints]) if (J.a === P || J.b === P) { removeJoint(J); n++; } if (n) sound('pop'); return n; }
+function detachPart(P) { let n = 0; for (const J of [...joints]) if (J.a === P || J.b === P) { removeJoint(J); n++; } if (n) { sound('pop'); detachCount++; } return n; }
 
 function toFree(A) {
   for (const P of A) { if (P.mode === 'bench') { worldMatrix(P, P.world); P.mode = 'free'; } }
@@ -519,6 +519,7 @@ function audio() { if (!actx) { try { actx = new (window.AudioContext || window.
 function sound(kind) {
   if (!actx) return;
   const t = actx.currentTime, o = actx.createOscillator(), g = actx.createGain();
+  if (kind === 'chime') { [880, 1320].forEach((f, k) => { const o = actx.createOscillator(), g = actx.createGain(), t0 = t + k * 0.11; o.type = 'sine'; o.frequency.setValueAtTime(f, t0); g.gain.setValueAtTime(0.0001, t0); g.gain.exponentialRampToValueAtTime(0.22, t0 + 0.02); g.gain.exponentialRampToValueAtTime(0.001, t0 + 0.5); o.connect(g).connect(actx.destination); o.start(t0); o.stop(t0 + 0.55); }); return; }
   const spec = { click: [1500, 900, 0.05, 0.25], pop: [420, 160, 0.12, 0.3], tick: [2200, 2000, 0.02, 0.06] }[kind];
   o.frequency.setValueAtTime(spec[0], t); o.frequency.exponentialRampToValueAtTime(spec[1], t + spec[2]);
   g.gain.setValueAtTime(spec[3], t); g.gain.exponentialRampToValueAtTime(0.001, t + spec[2] + 0.04);
@@ -674,8 +675,156 @@ function resetParts() {
   makePart('gearL', -0.10, -0.195);
   makePart('rail', 0.16, -0.20);
   setBenchVisible(bench.visible);
+  if (typeof guide !== 'undefined') { guide.learned = []; enterStep(0); }
 }
 document.getElementById('reset').addEventListener('click', () => { audio(); resetParts(); });
+
+// ---------- guided walkthrough ----------
+// Each step shows outlines of where parts go, checks itself, and adds what you learned to the board.
+const ghostMat = new THREE.MeshBasicMaterial({ color: 0x9fe0ff, transparent: true, opacity: 0.3, depthWrite: false });
+const ghostGroup = new THREE.Group(); bench.add(ghostGroup);
+const targetRings = [];
+function clearGhosts() { while (ghostGroup.children.length) ghostGroup.remove(ghostGroup.children[0]); targetRings.length = 0; }
+function addGhost(kind, x, z, th = 0) {
+  const P = makePart(kind, x, z, th); parts.pop(); nextId--;
+  scene.remove(P.mesh); P.mesh.matrixAutoUpdate = true;
+  P.mesh.traverse(o => { if (o.isMesh) o.material = ghostMat; });
+  P.mesh.position.set(x, 0.0012, z); P.mesh.rotation.set(0, -th, 0);
+  ghostGroup.add(P.mesh);
+}
+function pegTarget(x, z) {
+  const m = new THREE.Mesh(new THREE.TorusGeometry(0.01, 0.002, 8, 24), new THREE.MeshBasicMaterial({ color: 0xf0a03c, transparent: true }));
+  m.rotation.x = Math.PI / 2; m.position.set(x, 0.005, z); ghostGroup.add(m); targetRings.push(m);
+}
+const pegAt = (x, z) => pegs.findIndex(g => Math.abs(g.x - x) < 1e-6 && Math.abs(g.z - z) < 1e-6);
+const near2 = (a, x, z, d = 0.02) => Math.hypot(a[0] - x, a[1] - z) < d;
+const linked = (P, Q) => joints.some(J => (J.a === P && J.b === Q) || (J.a === Q && J.b === P));
+let detachCount = 0;
+function square() {
+  const bars = parts.filter(P => P.kind === 'bar10' && P.mode === 'bench');
+  const B = bars.find(P => { const pg = joints.filter(J => J.a === P && J.peg != null).map(J => J.peg); return pg.includes(pegAt(0, 0.075)) && pg.includes(pegAt(0.1, 0.075)); });
+  if (!B) return {};
+  // once the square is closed it's recognised by its joints, so it still counts while it leans over
+  const sides = bars.filter(P => P !== B && linked(P, B));
+  for (const L of sides) for (const R of sides) {
+    if (L === R) continue;
+    const T = bars.find(P => P !== B && P !== L && P !== R && linked(P, L) && linked(P, R));
+    if (T) { const lx = Math.min(...L.ports.map((_, i) => portBench(L, i)[0])), rx = Math.min(...R.ports.map((_, i) => portBench(R, i)[0])); return lx <= rx ? { B, L, R, T } : { B, L: R, R: L, T }; }
+  }
+  const endAt = (P, x, z) => P.ports.some((_, i) => near2(portBench(P, i), x, z, 0.025));
+  const L = sides.find(P => endAt(P, 0, 0.075) && endAt(P, 0, -0.025));
+  const R = sides.find(P => P !== L && endAt(P, 0.1, 0.075) && endAt(P, 0.1, -0.025));
+  return { B, L, R, T: null };
+}
+const held = P => hands.some(h => h.grab && h.grab.P === P);
+const STEPS = [
+  { title: 'Pick up a part', text: 'Pinch a bar between your thumb and finger, then lift your hand. The bar comes up with you.',
+    learn: 'Pinch to grab. Lift your hand to pick a part up off the bench.',
+    check: () => hands.some(h => h.grab && h.grab.mode === 'free') },
+  { title: 'Pin it to the pegs', text: 'Lay a bar on the two glowing pegs. When its blue rings light up, let go: it clicks in.',
+    learn: 'Blue rings are ports. Bring one near a peg until it glows, let go, and the part is pinned there.',
+    ghosts() { addGhost('bar10', 0.05, 0.075); pegTarget(0, 0.075); pegTarget(0.1, 0.075); }, check: () => !!square().B },
+  { title: 'Join a second bar', text: 'Put another bar’s ring on the left end of the first bar so it clicks. Then swing its free end up to the outline.',
+    learn: 'Ring on ring makes a pin joint: the parts stay together but can still turn.',
+    ghosts() { addGhost('bar10', 0, 0.025, Math.PI / 2); }, check: () => !!square().L },
+  { title: 'And on the right', text: 'Do the same on the right end: click a bar on, then swing it up to the outline.',
+    learn: null, ghosts() { addGhost('bar10', 0.1, 0.025, Math.PI / 2); }, check: () => !!square().R },
+  { title: 'Close the square', text: 'Lay the last bar across the top so both of its rings meet the tops of the side bars.',
+    learn: 'Bring a bar’s two rings to two ports at once and it closes the loop.',
+    ghosts() { addGhost('bar10', 0.05, -0.025); }, check: () => !!square().T },
+  { title: 'Push the top', text: 'Pinch the top bar and push it sideways. Watch what the square does.',
+    learn: 'Four pins make a linkage: the square leans over. It’s a shape that moves.',
+    enter() { const { T } = square(); this.t0 = T ? [T.x, T.z] : null; },
+    check() { const { T } = square(); return !!(T && this.t0 && Math.hypot(T.x - this.t0[0], T.z - this.t0[1]) > 0.025); } },
+  { title: 'Add the brace', text: 'Click the long diagonal bar onto the bottom-left corner, then swing its other end to the top-right corner.',
+    learn: 'A diagonal splits the square into two triangles.',
+    ghosts() { addGhost('brace', 0.05, 0.025, -Math.PI / 4); pegTarget(0, 0.075); },
+    check() { const Q = parts.find(P => P.kind === 'brace'), s = square(); return !!(Q && s.B && joints.filter(J => J.b && (J.a === Q || J.b === Q)).length >= 2 && assemblyOf(Q).includes(s.B)); } },
+  { title: 'Push it again', text: 'Push the top bar sideways again, the same way as before.',
+    learn: 'Triangles can’t change shape. Now it’s a frame: it holds.',
+    enter() { this.t = 0; }, tick(dt) { const { T } = square(); if (T && held(T)) this.t += dt; }, check() { return this.t > 1; } },
+  { title: 'Lock a joint', text: 'Tap one of the corner rings with your fingertip (on a computer: double-click it).',
+    learn: 'Tap a ring to lock that joint (it turns into a square). Tap again to free it.',
+    check: () => joints.some(J => J.type === 'fixed') },
+  { title: 'Mesh two gears', text: 'Pin the small gear and the big gear on the glowing pegs, so their teeth touch.',
+    learn: 'Gears pinned side by side mesh: turning one turns the other.',
+    ghosts() { addGhost('gearS', -0.2, -0.125); addGhost('gearL', -0.1, -0.125); pegTarget(-0.2, -0.125); pegTarget(-0.1, -0.125); },
+    check: () => gearPairs.size > 0 },
+  { title: 'Turn the big gear', text: 'Pinch the big gear near its edge and drag it round in a circle.',
+    learn: 'The small gear spins three times as fast, the other way. A circle trail means rotary motion.',
+    enter() { const G = parts.find(P => P.kind === 'gearL'); this.th0 = G ? G.th : 0; },
+    check() { const G = parts.find(P => P.kind === 'gearL'); return !!G && Math.abs(G.th - this.th0) > 1.2; } },
+  { title: 'Slider on the rail', text: 'Put the orange slider on the rail at the back. The rail’s slot glows when it lines up.',
+    learn: 'A rail joint: the slider can only move along the rail.',
+    ghosts() { addGhost('slider', 0.16, -0.2); }, check: () => joints.some(J => J.type === 'rail') },
+  { title: 'Slide it', text: 'Push the slider along the rail from one end to the other.',
+    learn: 'A straight trail means linear motion. The slider stops at the rail’s ends.',
+    enter() { this.lo = Infinity; this.hi = -Infinity; },
+    tick() { const J = joints.find(J => J.type === 'rail'); if (!J) return; const S = J.a, R = J.b, [dx, dz] = rot(1, 0, R.th), t = (S.x - R.x) * dx + (S.z - R.z) * dz; this.lo = Math.min(this.lo, t); this.hi = Math.max(this.hi, t); },
+    check() { return this.hi - this.lo > 0.1; } },
+  { title: 'Stretch to look closer', text: 'Pinch the long bar with both hands and pull your hands apart (on a computer: scroll over it).',
+    learn: 'Two hands scale a loose part up for a closer look. It returns to size when you connect it.',
+    check: () => parts.some(P => P.scale > 1.4) },
+  { title: 'Take something apart', text: 'Pinch any connected part and pull it firmly away from its group.',
+    learn: 'Pull hard to undo a joint.', enter() { this.d0 = detachCount; }, check() { return detachCount > this.d0; } }
+];
+const guide = { i: 0, learned: [], doneT: 0, dirty: true, finished: false };
+function enterStep(i) {
+  guide.i = Math.max(0, Math.min(STEPS.length, i)); guide.doneT = 0; guide.dirty = true; clearGhosts();
+  guide.finished = guide.i >= STEPS.length;
+  const s = STEPS[guide.i]; if (!s) return;
+  if (s.enter) s.enter(); if (s.ghosts) s.ghosts();
+}
+function guideTick(dt) {
+  ghostMat.opacity = 0.2 + 0.14 * (0.5 + 0.5 * Math.sin(clock * 4));
+  for (const r of targetRings) r.scale.setScalar(1 + 0.25 * (0.5 + 0.5 * Math.sin(clock * 5)));
+  const s = STEPS[guide.i]; if (!s) return;
+  if (guide.doneT > 0) { guide.doneT += dt; if (guide.doneT > 1.2) enterStep(guide.i + 1); return; }
+  if (s.tick) s.tick(dt);
+  if (s.check.call(s)) {
+    guide.doneT = 0.001; guide.dirty = true; clearGhosts(); sound('chime');
+    if (s.learn && !guide.learned.includes(s.learn)) guide.learned.push(s.learn);
+  }
+}
+// the board beside the bench: current step on top, what you've learned below
+const boardCanvas = document.createElement('canvas'); boardCanvas.width = 1024; boardCanvas.height = 1344; boardCanvas.id = 'board';
+const boardTex = new THREE.CanvasTexture(boardCanvas); boardTex.colorSpace = THREE.SRGBColorSpace;
+const board = new THREE.Mesh(new THREE.PlaneGeometry(0.28, 0.3675), new THREE.MeshBasicMaterial({ map: boardTex, transparent: true }));
+board.position.set(-0.47, 0.19, 0.02); board.rotation.set(-0.12, 0.5, 0, 'YXZ'); bench.add(board);
+function wrap(x, text, maxW) { const words = text.split(' '), lines = []; let line = ''; for (const w of words) { const t = line ? line + ' ' + w : w; if (x.measureText(t).width > maxW && line) { lines.push(line); line = w; } else line = t; } if (line) lines.push(line); return lines; }
+function drawBoard() {
+  const x = boardCanvas.getContext('2d'), W = 1024, H = 1344, pad = 56;
+  x.clearRect(0, 0, W, H);
+  x.fillStyle = 'rgba(31,44,69,0.94)'; x.beginPath(); x.roundRect(0, 0, W, H, 44); x.fill();
+  let y = 92;
+  const s = STEPS[guide.i];
+  x.fillStyle = '#f0a03c'; x.font = '600 34px system-ui, sans-serif';
+  x.fillText(guide.finished ? 'ALL DONE' : `STEP ${guide.i + 1} OF ${STEPS.length}`, pad, y);
+  y += 72; x.fillStyle = '#f6efdf'; x.font = '700 62px system-ui, sans-serif';
+  x.fillText(guide.finished ? 'Free play' : s.title, pad, y);
+  y += 60; x.font = '400 40px system-ui, sans-serif'; x.fillStyle = '#e3e6ee';
+  for (const l of wrap(x, guide.finished ? 'You’ve tried every interaction. Build anything you like, or press reset to start again.' : s.text, W - pad * 2)) { x.fillText(l, pad, y); y += 52; }
+  if (guide.doneT > 0) { y += 10; x.fillStyle = '#5fbf6a'; x.font = '700 48px system-ui, sans-serif'; x.fillText('✓ Nice!', pad, y); y += 30; }
+  y += 34; x.strokeStyle = 'rgba(246,239,223,0.25)'; x.lineWidth = 3; x.beginPath(); x.moveTo(pad, y); x.lineTo(W - pad, y); x.stroke();
+  y += 62; x.fillStyle = '#f0a03c'; x.font = '600 34px system-ui, sans-serif'; x.fillText('WHAT YOU’VE LEARNED', pad, y);
+  y += 20;
+  // shrink the list's type until everything learned so far fits
+  let fs = 34, flat = [];
+  for (; fs >= 22; fs -= 2) {
+    x.font = `400 ${fs}px system-ui, sans-serif`;
+    flat = guide.learned.flatMap(t => wrap(x, t, W - pad * 2 - 56).map((l, j) => ({ l, first: j === 0 })));
+    if (flat.length * fs * 1.28 + guide.learned.length * 6 < H - y - 36) break;
+  }
+  if (!flat.length) { y += 52; x.fillStyle = 'rgba(227,230,238,0.55)'; x.fillText('Each step you finish adds a line here.', pad, y); }
+  for (const f of flat) { y += fs * 1.28 + (f.first ? 6 : 0); if (f.first) { x.fillStyle = '#5fbf6a'; x.fillText('✓', pad, y); } x.fillStyle = '#e3e6ee'; x.fillText(f.l, pad + 48, y); }
+  boardTex.needsUpdate = true;
+}
+makeButton('back', -0.37, 0.27, () => enterStep(guide.i - 1));
+makeButton('skip', -0.37, 0.21, () => { if (STEPS[guide.i]) enterStep(guide.i + 1); });
+boardCanvas.style.cssText = 'position:fixed;right:16px;top:16px;width:min(330px,42vw);border-radius:14px;pointer-events:none';
+document.body.appendChild(boardCanvas);
+document.getElementById('back').addEventListener('click', () => { audio(); enterStep(guide.i - 1); });
+document.getElementById('skip').addEventListener('click', () => { audio(); if (STEPS[guide.i]) enterStep(guide.i + 1); });
 
 // ---------- main loop ----------
 let lastT = performance.now();
@@ -693,6 +842,8 @@ function update(dt) {
   solve();
   checkBreaks(dt);
   if (renderer.xr.isPresenting) for (const h of hands) if (h.tracked && !h.pinch && h.tipPrev.y - h.tip.y > 0.0005) poke(h.tip);
+  guideTick(dt);
+  if (guide.dirty || guide.doneT > 0) { drawBoard(); guide.dirty = false; }
   updateTrails();
   updateVisuals();
 }
@@ -722,6 +873,7 @@ async function setupXR() {
 }
 setupXR();
 resetParts();
+enterStep(0);
 
 // ---------- test hooks (used by automated tests; harmless otherwise) ----------
 window.__ft = {
@@ -735,5 +887,5 @@ window.__ft = {
   gearPairs: () => [...gearPairs.values()].map(g => [g.A.id, g.B.id]),
   trails: () => parts.map(P => P.trailPts.length),
   freeY: P => benchLocal(new THREE.Vector3().setFromMatrixPosition(P.world)).y,
-  reset: resetParts
+  reset: resetParts, guide, STEPS, enterStep, square: () => { const s = square(); return Object.fromEntries(Object.entries(s).map(([k, v]) => [k, v && v.id])); }
 };
