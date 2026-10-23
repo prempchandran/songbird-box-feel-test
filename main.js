@@ -740,6 +740,37 @@ function resetParts() {
 }
 document.getElementById('reset').addEventListener('click', () => { audio(); resetParts(); });
 
+
+// ---------- pictures for the "what you've learned" board ----------
+const LEARN_ICONS = { 0: 'pinch', 1: 'peg', 2: 'pin', 4: 'loop', 5: 'linkage', 6: 'diagonal', 7: 'frame', 8: 'lock', 9: 'mesh', 10: 'rotary', 11: 'rail', 12: 'linear', 13: 'inspect', 14: 'pull' };
+const LEARN_LABELS = { 0: 'Pinch = grab', 1: 'Ring on peg', 2: 'Pin joint', 4: 'Close a loop', 5: 'Linkage moves', 6: 'Add a diagonal', 7: 'Frame holds', 8: 'Tap to lock', 9: 'Gears mesh', 10: 'Rotary', 11: 'Rail joint', 12: 'Linear', 13: 'Look closer', 14: 'Pull apart' };
+function drawIcon(x, kind) {
+  const KR = '#c99a68', BL = '#2a8fd6', OR = '#f0a03c', CR = '#e3e6ee', NV = '#1f2c45', GR = '#5fbf6a';
+  const bar = (x1, y1, x2, y2, c = KR, w = 13) => { x.strokeStyle = c; x.lineWidth = w; x.lineCap = 'round'; x.beginPath(); x.moveTo(x1, y1); x.lineTo(x2, y2); x.stroke(); };
+  const ring = (cx, cy, c = BL, r = 9) => { x.strokeStyle = c; x.lineWidth = 5; x.beginPath(); x.arc(cx, cy, r, 0, TAU); x.stroke(); };
+  const dot = (cx, cy, r, c) => { x.fillStyle = c; x.beginPath(); x.arc(cx, cy, r, 0, TAU); x.fill(); };
+  const arrow = (x1, y1, x2, y2, c = OR) => { bar(x1, y1, x2, y2, c, 6); const a = Math.atan2(y2 - y1, x2 - x1); x.fillStyle = c; x.beginPath(); x.moveTo(x2 + 10 * Math.cos(a), y2 + 10 * Math.sin(a)); x.lineTo(x2 + 10 * Math.cos(a + 2.4), y2 + 10 * Math.sin(a + 2.4)); x.lineTo(x2 + 10 * Math.cos(a - 2.4), y2 + 10 * Math.sin(a - 2.4)); x.fill(); };
+  const arcArrow = (cx, cy, r, a0, a1, c = OR) => { x.strokeStyle = c; x.lineWidth = 6; x.lineCap = 'round'; x.beginPath(); x.arc(cx, cy, r, a0, a1); x.stroke(); const ex = cx + r * Math.cos(a1), ey = cy + r * Math.sin(a1), t = a1 + Math.PI / 2; x.fillStyle = c; x.beginPath(); x.moveTo(ex + 11 * Math.cos(t), ey + 11 * Math.sin(t)); x.lineTo(ex + 9 * Math.cos(t + 2.3), ey + 9 * Math.sin(t + 2.3)); x.lineTo(ex + 9 * Math.cos(t - 2.3), ey + 9 * Math.sin(t - 2.3)); x.fill(); };
+  const check = (cx, cy) => { x.strokeStyle = GR; x.lineWidth = 8; x.lineCap = 'round'; x.beginPath(); x.moveTo(cx - 10, cy); x.lineTo(cx - 2, cy + 9); x.lineTo(cx + 14, cy - 10); x.stroke(); };
+  const sq = (s = 38, lean = 0, diag = false) => { const p = [[-s + lean, -s], [s + lean, -s], [s, s], [-s, s]]; bar(p[3][0], p[3][1], p[2][0], p[2][1]); bar(p[0][0], p[0][1], p[3][0], p[3][1]); bar(p[1][0], p[1][1], p[2][0], p[2][1]); bar(p[0][0], p[0][1], p[1][0], p[1][1]); if (diag) bar(p[3][0], p[3][1], p[1][0], p[1][1], '#e0b98c'); p.forEach(q => ring(q[0], q[1], NV, 7)); };
+  switch (kind) {
+    case 'pinch': bar(-34, 34, 0, 2, CR, 14); bar(-30, -34, 0, -4, CR, 14); dot(2, -1, 8, OR); break;
+    case 'peg': bar(-38, 10, 38, 10); dot(-38, 10, 11, OR); dot(38, 10, 11, OR); ring(-38, 10, NV); ring(38, 10, NV); arrow(0, -40, 0, -12); break;
+    case 'pin': bar(-40, 30, 0, 0); bar(0, 0, 38, -26); ring(0, 0, BL, 10); arcArrow(0, 0, 30, -2.6, -1.4); break;
+    case 'loop': sq(34); break;
+    case 'linkage': sq(32, 22); arcArrow(-32, 32, 64, -1.9, -1.2); break;
+    case 'diagonal': sq(34, 0, true); break;
+    case 'frame': sq(30, 0, true); check(34, -40); break;
+    case 'lock': bar(-40, 24, 0, 24); bar(0, 24, 30, -10); x.fillStyle = NV; x.fillRect(-10, 14, 20, 20); bar(16, -46, 4, 6, CR, 10); break;
+    case 'mesh': for (const [cx, r] of [[-22, 22], [26, 26]]) { x.strokeStyle = KR; x.lineWidth = 9; x.setLineDash([6, 5]); x.beginPath(); x.arc(cx, 4, r, 0, TAU); x.stroke(); x.setLineDash([]); dot(cx, 4, r - 5, KR); dot(cx, 4, 5, NV); } break;
+    case 'rotary': dot(0, 4, 26, KR); dot(0, 4, 5, NV); arcArrow(0, 4, 40, -2.8, 1.9); break;
+    case 'rail': x.fillStyle = '#e8dcc3'; x.fillRect(-48, -4, 96, 18); x.fillStyle = '#3b2a1a'; x.fillRect(-40, 3, 80, 4); x.fillStyle = OR; x.fillRect(4, -12, 22, 34); arrow(-28, -30, 26, -30); break;
+    case 'linear': for (let k = 0; k < 4; k++) dot(-46 + k * 12, 4, 3 + k * 0.6, OR); arrow(-6, 4, 40, 4); break;
+    case 'inspect': bar(-14, 0, 14, 0, KR, 9); ring(-14, 0, BL, 5); ring(14, 0, BL, 5); x.strokeStyle = CR; x.lineWidth = 6; x.beginPath(); x.arc(0, 0, 30, 0, TAU); x.stroke(); bar(21, 21, 42, 42, CR, 9); break;
+    case 'pull': bar(-44, 6, -10, 6); bar(10, 6, 44, 6); ring(-10, 6, BL, 8); ring(10, 6, BL, 8); arrow(-14, -26, -42, -26); arrow(14, -26, 42, -26); break;
+  }
+}
+
 // ---------- guided walkthrough ----------
 // Each step shows outlines of where parts go, checks itself, and adds what you learned to the board.
 const ghostMat = new THREE.MeshBasicMaterial({ color: 0x9fe0ff, transparent: true, opacity: 0.3, depthWrite: false });
@@ -904,7 +935,7 @@ function guideTick(dt) {
   if (s.tick) s.tick(dt);
   if (s.check.call(s)) {
     guide.doneT = 0.001; guide.dirty = true; clearGhosts(); rewardStep(guide.i);
-    if (s.learn && !guide.learned.includes(s.learn)) guide.learned.push(s.learn);
+    if (s.learn && !guide.learned.includes(guide.i)) guide.learned.push(guide.i);
   }
 }
 // the board beside the bench: current step on top, what you've learned below
@@ -931,16 +962,18 @@ function drawBoard() {
   if (guide.doneT > 0 && !paused) { y += 10; x.fillStyle = '#5fbf6a'; x.font = '700 48px system-ui, sans-serif'; x.fillText(guide.i === 4 ? '✓ Basics done: the first bar of the song!' : '✓ Nice!  ♪', pad, y); y += 30; }
   y += 34; x.strokeStyle = 'rgba(246,239,223,0.25)'; x.lineWidth = 3; x.beginPath(); x.moveTo(pad, y); x.lineTo(W - pad, y); x.stroke();
   y += 62; x.fillStyle = '#f0a03c'; x.font = '600 34px system-ui, sans-serif'; x.fillText('WHAT YOU’VE LEARNED', pad, y);
-  y += 20;
-  // shrink the list's type until everything learned so far fits
-  let fs = 34, flat = [];
-  for (; fs >= 22; fs -= 2) {
-    x.font = `400 ${fs}px system-ui, sans-serif`;
-    flat = guide.learned.flatMap(t => wrap(x, t, W - pad * 2 - 56).map((l, j) => ({ l, first: j === 0 })));
-    if (flat.length * fs * 1.28 + guide.learned.length * 6 < H - y - 36) break;
-  }
-  if (!flat.length) { y += 52; x.fillStyle = 'rgba(227,230,238,0.55)'; x.fillText('Each step you finish adds a line here.', pad, y); }
-  for (const f of flat) { y += fs * 1.28 + (f.first ? 6 : 0); if (f.first) { x.fillStyle = '#5fbf6a'; x.fillText('✓', pad, y); } x.fillStyle = '#e3e6ee'; x.fillText(f.l, pad + 48, y); }
+  // pictures, not sentences: one tile per thing learned, with a short label; the newest one's full sentence underneath
+  const cols = 4, gap = 18, tw = (W - pad * 2 - gap * (cols - 1)) / cols, th = 168, top0 = y + 22;
+  if (!guide.learned.length) { x.fillStyle = 'rgba(227,230,238,0.55)'; x.font = '400 34px system-ui, sans-serif'; x.fillText('Each step you finish adds a picture here.', pad, y + 60); }
+  guide.learned.forEach((si, k) => {
+    const cx = pad + (k % cols) * (tw + gap), cy = top0 + Math.floor(k / cols) * (th + gap), fresh = k === guide.learned.length - 1 && guide.doneT > 0;
+    x.fillStyle = fresh ? 'rgba(95,191,106,0.22)' : 'rgba(246,239,223,0.07)'; x.beginPath(); x.roundRect(cx, cy, tw, th, 18); x.fill();
+    if (fresh) { x.strokeStyle = '#5fbf6a'; x.lineWidth = 4; x.stroke(); }
+    x.save(); x.translate(cx + tw / 2, cy + 64); drawIcon(x, LEARN_ICONS[si] || 'pinch'); x.restore();
+    x.fillStyle = '#e3e6ee'; x.font = '600 27px system-ui, sans-serif'; x.textAlign = 'center'; x.fillText(LEARN_LABELS[si] || '', cx + tw / 2, cy + th - 22); x.textAlign = 'left';
+  });
+  const rows = Math.ceil(guide.learned.length / cols), last = guide.learned[guide.learned.length - 1];
+  if (last != null && STEPS[last]) { let yy = top0 + rows * (th + gap) + 30; x.fillStyle = 'rgba(227,230,238,0.8)'; x.font = '400 30px system-ui, sans-serif'; for (const l of wrap(x, STEPS[last].learn, W - pad * 2)) { if (yy > H - 24) break; x.fillText(l, pad, yy); yy += 38; } }
   boardTex.needsUpdate = true;
 }
 makeButton('back', -0.37, 0.27, () => enterStep(guide.i - 1));
@@ -1092,10 +1125,45 @@ function update(dt) {
   updateTrails();
   updateVisuals();
 }
+// ---------- performance meter: is it holding 72 Hz on the headset? ----------
+const perf = { target: 72, n: 0, slow: 0, sum: 0, worst: 0, win: [], calls: 0, tris: 0, shownT: 0, startT: 0 };
+const perfCanvas = document.createElement('canvas'); perfCanvas.width = 640; perfCanvas.height = 300;
+const perfTex = new THREE.CanvasTexture(perfCanvas); perfTex.colorSpace = THREE.SRGBColorSpace;
+const perfPanel = new THREE.Mesh(new THREE.PlaneGeometry(0.16, 0.075), new THREE.MeshBasicMaterial({ map: perfTex, transparent: true }));
+perfPanel.position.set(0.26, 0.09, -0.46); perfPanel.rotation.set(-0.18, -0.22, 0, 'YXZ'); bench.add(perfPanel);
+function perfReset() { Object.assign(perf, { n: 0, slow: 0, sum: 0, worst: 0, win: [], startT: performance.now() }); }
+function perfFrame(ms) {
+  if (ms <= 0 || ms > 1000) return;
+  const budget = 1000 / perf.target;
+  perf.n++; perf.sum += ms; if (ms > budget * 1.5) perf.slow++; if (perf.n > 30) perf.worst = Math.max(perf.worst, ms);
+  perf.win.push(ms); if (perf.win.length > perf.target * 5) perf.win.shift();
+}
+function perfStats() {
+  const w = perf.win, avg = w.length ? w.reduce((a, b) => a + b, 0) / w.length : 0, sorted = [...w].sort((a, b) => a - b);
+  return { fps: avg ? 1000 / avg : 0, p95: sorted.length ? sorted[Math.floor(sorted.length * 0.95)] : 0, sessionFps: perf.sum ? 1000 * perf.n / perf.sum : 0, slowPct: perf.n ? 100 * perf.slow / perf.n : 0, worst: perf.worst, secs: (performance.now() - perf.startT) / 1000 };
+}
+function drawPerf() {
+  const x = perfCanvas.getContext('2d'), st = perfStats(), ok = st.fps >= perf.target * 0.97 && st.slowPct < 1;
+  x.clearRect(0, 0, 640, 300); x.fillStyle = 'rgba(31,44,69,0.92)'; x.beginPath(); x.roundRect(0, 0, 640, 300, 30); x.fill();
+  x.fillStyle = '#f0a03c'; x.font = '600 30px system-ui, sans-serif'; x.fillText(`PERFORMANCE \u00b7 TARGET ${perf.target} Hz`, 30, 50);
+  x.fillStyle = ok ? '#5fbf6a' : st.fps >= 60 ? '#f0a03c' : '#e0645a'; x.font = '700 64px system-ui, sans-serif';
+  x.fillText(`${st.fps.toFixed(1)} fps ${ok ? '\u2713' : '!'}`, 30, 125);
+  x.fillStyle = '#e3e6ee'; x.font = '400 30px system-ui, sans-serif';
+  x.fillText(`slow frames ${st.slowPct.toFixed(1)}% \u00b7 95th pct ${st.p95.toFixed(1)} ms`, 30, 178);
+  x.fillText(`${perf.calls} draws \u00b7 ${(perf.tris / 1000).toFixed(0)}k triangles`, 30, 222);
+  x.fillStyle = 'rgba(227,230,238,0.7)'; x.fillText(`over ${st.secs.toFixed(0)} s: ${st.sessionFps.toFixed(1)} fps avg`, 30, 266);
+  perfTex.needsUpdate = true;
+  const d = document.getElementById('perf'); if (d) d.textContent = `${perf.calls} draws · ${(perf.tris / 1000).toFixed(0)}k triangles · ${st.fps.toFixed(0)} fps (browser)`;
+}
+let lastFrameT = 0;
 renderer.setAnimationLoop(() => {
   const now = performance.now(), dt = Math.min(0.05, (now - lastT) / 1000); lastT = now;
+  if (lastFrameT) perfFrame(now - lastFrameT); lastFrameT = now;
   update(dt);
+  perfPanel.visible = renderer.xr.isPresenting && bench.visible;
   renderer.render(scene, camera);
+  perf.calls = renderer.info.render.calls; perf.tris = renderer.info.render.triangles;
+  if (now - perf.shownT > 500) { perf.shownT = now; drawPerf(); }
 });
 
 // ---------- entering mixed reality ----------
@@ -1112,7 +1180,11 @@ async function setupXR() {
     const session = await navigator.xr.requestSession(ar ? 'immersive-ar' : 'immersive-vr', { requiredFeatures: ['local-floor'], optionalFeatures: ['hand-tracking', 'plane-detection'] });
     passthrough = ar;
     if (ar) scene.background = null;
+    renderer.xr.setFoveation(1);
     await renderer.xr.setSession(session);
+    // ask for a steady 72 Hz (Meta's minimum refresh rate for Quest apps)
+    try { if (session.updateTargetFrameRate && session.supportedFrameRates) { const rates = [...session.supportedFrameRates]; const want = rates.includes(72) ? 72 : Math.min(...rates.filter(r => r >= 72)); if (isFinite(want)) { await session.updateTargetFrameRate(want); perf.target = want; } } } catch (e) {}
+    perfReset(); lastFrameT = 0;
     calibrating = true; panel.visible = true; setBenchVisible(false);
     session.addEventListener('end', () => { scene.background = deskBg; calibrating = false; panel.visible = false; setBenchVisible(true); bench.position.set(0, 0.75, -0.43); bench.rotation.set(0, 0, 0); });
   });
@@ -1133,5 +1205,5 @@ window.__ft = {
   gearPairs: () => [...gearPairs.values()].map(g => [g.A.id, g.B.id]),
   trails: () => parts.map(P => P.trailPts.length),
   freeY: P => benchLocal(new THREE.Vector3().setFromMatrixPosition(P.world)).y,
-  reset: resetParts, guide, STEPS, enterStep, square: () => { const s = square(); return Object.fromEntries(Object.entries(s).map(([k, v]) => [k, v && v.id])); }
+  reset: resetParts, perf, perfStats, perfCanvas, guide, STEPS, enterStep, square: () => { const s = square(); return Object.fromEntries(Object.entries(s).map(([k, v]) => [k, v && v.id])); }
 };
