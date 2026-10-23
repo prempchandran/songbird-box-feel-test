@@ -21,10 +21,14 @@ const scene = new THREE.Scene();
 const deskBg = new THREE.Color(0x1b2436);
 scene.background = deskBg;
 const camera = new THREE.PerspectiveCamera(50, innerWidth / innerHeight, 0.01, 20);
-camera.position.set(0, 1.2, -0.02); camera.lookAt(0, 0.75, -0.43);
+function fitCamera() { // pull back in tall or narrow windows so the whole bench stays in view
+  const k = Math.max(1, 1.5 / (innerWidth / innerHeight));
+  camera.position.set(0, 0.75 + 0.45 * k, -0.43 + 0.41 * k); camera.lookAt(0, 0.75, -0.43);
+}
+fitCamera();
 scene.add(new THREE.HemisphereLight(0xfff4e0, 0x3a3020, 1.3));
 const sun = new THREE.DirectionalLight(0xffffff, 1.3); sun.position.set(0.3, 2, 0.6); scene.add(sun);
-addEventListener('resize', () => { camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight); });
+addEventListener('resize', () => { camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight); fitCamera(); });
 
 const std = (c, extra = {}) => new THREE.MeshStandardMaterial({ color: c, roughness: 0.8, ...extra });
 
@@ -667,10 +671,10 @@ function resetParts() {
   for (const P of parts) scene.remove(P.mesh);
   parts.length = 0; gearPairs = new Map();
   for (const h of hands) h.grab = null;
-  [-0.25, -0.13, -0.01, 0.11].forEach(x => makePart('bar10', x, 0.20));
-  makePart('slider', 0.235, 0.20);
-  makePart('brace', -0.17, 0.255);
-  makePart('bar20', 0.07, 0.255);
+  [-0.24, -0.1, 0.04, 0.18].forEach(x => makePart('bar10', x, 0.195));
+  makePart('slider', 0.255, 0.26);
+  makePart('brace', -0.19, 0.26);
+  makePart('bar20', 0.06, 0.26);
   makePart('gearS', -0.245, -0.205);
   makePart('gearL', -0.10, -0.195);
   makePart('rail', 0.16, -0.20);
@@ -718,10 +722,11 @@ function square() {
 }
 const held = P => hands.some(h => h.grab && h.grab.P === P);
 const STEPS = [
-  { title: 'Pick up a part', text: 'Pinch a bar between your thumb and finger, then lift your hand. The bar comes up with you.',
+  { title: 'Pick up a part', text: 'Find the bar with the orange arrow over it. Pinch it between your thumb and finger, then lift your hand: the bar comes up with you.',
     learn: 'Pinch to grab. Lift your hand to pick a part up off the bench.',
+    ghosts() { addGhost('bar10', 0.05, 0.075); pegTarget(0, 0.075); pegTarget(0.1, 0.075); },
     check: () => hands.some(h => h.grab && h.grab.mode === 'free') },
-  { title: 'Pin it to the pegs', text: 'Lay a bar on the two glowing pegs. When its blue rings light up, let go: it clicks in.',
+  { title: 'Pin it to the pegs', text: 'Follow the dotted path and lay the bar on the outline, over the two orange pegs. When its blue rings light up, let go: it clicks in.',
     learn: 'Blue rings are ports. Bring one near a peg until it glows, let go, and the part is pinned there.',
     ghosts() { addGhost('bar10', 0.05, 0.075); pegTarget(0, 0.075); pegTarget(0.1, 0.075); }, check: () => !!square().B },
   { title: 'Join a second bar', text: 'Put another bar’s ring on the left end of the first bar so it clicks. Then swing its free end up to the outline.',
@@ -768,6 +773,64 @@ const STEPS = [
   { title: 'Take something apart', text: 'Pinch any connected part and pull it firmly away from its group.',
     learn: 'Pull hard to undo a joint.', enter() { this.d0 = detachCount; }, check() { return detachCount > this.d0; } }
 ];
+// which part to use (an arrow bobs over it and it glows) and where it goes (a dotted path to its outline)
+const looseOf = kind => parts.filter(P => P.kind === kind && isLoose(P));
+function nearestTo(list, x, z) { let best = null, bd = Infinity; for (const P of list) { const d = Math.hypot(P.x - x, P.z - z); if (d < bd) { bd = d; best = P; } } return best; }
+function sideCandidate(endX) { // a bar hanging off the bottom bar that hasn't been swung up yet, else a loose one
+  const s = square(); if (!s.B) return null;
+  const hanging = parts.filter(P => P.kind === 'bar10' && P !== s.B && P !== s.L && P !== s.R && linked(P, s.B) && P.ports.some((_, i) => near2(portBench(P, i), endX, 0.075, 0.025)));
+  return hanging[0] || nearestTo(looseOf('bar10'), endX, 0.075);
+}
+const CUES = [
+  () => [{ P: nearestTo(looseOf('bar10'), 0.05, 0.075), to: [0.05, 0.075] }],
+  () => [{ P: nearestTo(looseOf('bar10'), 0.05, 0.075), to: [0.05, 0.075] }],
+  () => [{ P: sideCandidate(0), to: [0, 0.025] }],
+  () => [{ P: sideCandidate(0.1), to: [0.1, 0.025] }],
+  () => [{ P: nearestTo(looseOf('bar10'), 0.05, -0.025), to: [0.05, -0.025] }],
+  () => [{ P: square().T }],
+  () => [{ P: parts.find(P => P.kind === 'brace'), to: [0.05, 0.025] }],
+  () => [{ P: square().T }],
+  () => { const s = square(); return s.B ? [{ pt: portBench(s.B, 0) }] : []; },
+  () => [{ P: parts.find(P => P.kind === 'gearS'), to: [-0.2, -0.125] }, { P: parts.find(P => P.kind === 'gearL'), to: [-0.1, -0.125] }],
+  () => { const G = parts.find(P => P.kind === 'gearL'); return G ? [{ pt: wpt(G, G.r * 0.8, 0) }] : []; },
+  () => [{ P: parts.find(P => P.kind === 'slider'), to: [0.16, -0.2] }],
+  () => [{ P: parts.find(P => P.kind === 'slider') }],
+  () => [{ P: parts.find(P => P.kind === 'bar20') }],
+  () => [{ P: square().T || parts.find(P => !isLoose(P) && P.kind !== 'rail') }]
+];
+const cueArrows = [0, 1].map(() => { const m = new THREE.Mesh(new THREE.ConeGeometry(0.011, 0.026, 18), new THREE.MeshBasicMaterial({ color: 0xf0a03c })); m.rotation.x = Math.PI; m.visible = false; bench.add(m); return m; });
+const PATH_N = 16;
+const pathDots = new THREE.InstancedMesh(new THREE.SphereGeometry(0.0028, 8, 6), new THREE.MeshBasicMaterial({ color: 0xf0a03c, transparent: true, opacity: 0.85 }), PATH_N * 2);
+pathDots.frustumCulled = false; pathDots.count = 0; bench.add(pathDots);
+let glowing = new Set();
+function updateCues() {
+  for (const P of glowing) P.mesh.traverse(o => { if (o.isMesh && o.material.emissive && !P.rings.includes(o)) o.material.emissive.setHex(0x000000); });
+  glowing = new Set(); cueArrows.forEach(a => (a.visible = false)); pathDots.count = 0;
+  const f = CUES[guide.i];
+  if (!f || guide.doneT > 0 || calibrating) return;
+  const items = f().filter(c => c && (c.P || c.pt)), m = new THREE.Matrix4(), bob = 0.012 * Math.sin(clock * 5);
+  const glow = new THREE.Color(0x8a5414).multiplyScalar(0.55 + 0.45 * Math.sin(clock * 5));
+  let n = 0;
+  items.slice(0, 2).forEach((c, k) => {
+    let x, z, y = 0.05;
+    if (c.P) {
+      if (held(c.P) && !c.to) { return; }
+      x = c.P.mode === 'bench' ? c.P.x : null; z = c.P.mode === 'bench' ? c.P.z : null;
+      if (x == null) return;
+      y = layerY(c.P) + c.P.top + 0.045;
+      glowing.add(c.P); c.P.mesh.traverse(o => { if (o.isMesh && o.material.emissive && !c.P.rings.includes(o)) o.material.emissive.copy(glow); });
+    } else { [x, z] = c.pt; y = 0.04; }
+    const a = cueArrows[k]; a.visible = !(c.P && held(c.P)); a.position.set(x, y + bob, z);
+    if (c.to && c.P && !held(c.P) && Math.hypot(c.to[0] - x, c.to[1] - z) > 0.03) {
+      for (let s = 1; s < PATH_N; s++) {
+        const t = s / PATH_N, ph = (t + clock * 0.35) % 1, px = x + (c.to[0] - x) * t, pz = z + (c.to[1] - z) * t, py = 0.012 + 0.06 * Math.sin(Math.PI * t);
+        const r = 0.6 + 0.6 * (ph < 0.15 ? 1 - ph / 0.15 : 0);
+        m.compose(_v.set(px, py, pz), _q.identity(), _s.set(r, r, r)); pathDots.setMatrixAt(n++, m);
+      }
+    }
+  });
+  pathDots.count = n; pathDots.instanceMatrix.needsUpdate = true;
+}
 const guide = { i: 0, learned: [], doneT: 0, dirty: true, finished: false };
 function enterStep(i) {
   guide.i = Math.max(0, Math.min(STEPS.length, i)); guide.doneT = 0; guide.dirty = true; clearGhosts();
@@ -843,6 +906,7 @@ function update(dt) {
   checkBreaks(dt);
   if (renderer.xr.isPresenting) for (const h of hands) if (h.tracked && !h.pinch && h.tipPrev.y - h.tip.y > 0.0005) poke(h.tip);
   guideTick(dt);
+  updateCues();
   if (guide.dirty || guide.doneT > 0) { drawBoard(); guide.dirty = false; }
   updateTrails();
   updateVisuals();
