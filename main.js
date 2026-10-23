@@ -83,7 +83,8 @@ function gearGeometry(r, n) {
   g.rotateX(-Math.PI / 2);
   return g;
 }
-const ringGeo = new THREE.TorusGeometry(0.0065, 0.0017, 8, 20); ringGeo.rotateX(Math.PI / 2);
+// ports: >= 16 mm visual ring; pokes use a >= 24 mm collider (Meta: 22 mm minimum hit target, 12 mm spacing)
+const ringGeo = new THREE.TorusGeometry(0.0078, 0.0022, 8, 24); ringGeo.rotateX(Math.PI / 2);
 
 function makePart(kind, x, z, th = 0) {
   const K = KIND[kind], g = new THREE.Group();
@@ -137,7 +138,7 @@ function makePart(kind, x, z, th = 0) {
 const rot = (x, z, th) => { const c = Math.cos(th), s = Math.sin(th); return [x * c - z * s, x * s + z * c]; };
 const _q = new THREE.Quaternion(), _v = new THREE.Vector3(), _s = new THREE.Vector3(), _m = new THREE.Matrix4(), UP = new THREE.Vector3(0, 1, 0);
 let benchRank = new Map(), benchY = new Map();
-function layerY(P) { return benchY.get(P) ?? 0.0005; }
+function layerY(P) { return (benchY.get(P) ?? 0.0005) + (typeof held === 'function' && held(P) ? 0.004 : 0); }
 const radiusOf = P => Math.max(P.half[0], P.half[2]) * P.scale;
 // parts lie on the bench; a part sits on top of any earlier-placed part it overlaps
 function stackParts() {
@@ -305,7 +306,7 @@ function trySnap(A) {
     }
     addJoint({ type: 'rail', a: S, ai: c.i, b: R, th0: th0 === 0 ? 0 : Math.PI });
   }
-  sound('click');
+  sound('click'); flash(portWorld(c.P, c.i));
   // the part just placed may close a loop with its other ports: join them if they're within reach
   if (c.P.mode === 'bench') c.P.ports.forEach((pt, i) => {
     if (i === c.i || pt.type !== 'pin') return;
@@ -427,9 +428,18 @@ function relsFor(A, h) { const inv = handMatrix(h).invert(), rels = new Map(); f
 function startFreeGrab(h, P) { const A = assemblyOf(P); toFree(A); h.grab = { P, mode: 'free', rels: relsFor(A, h) }; }
 
 function onPinchStart(h) {
+  if (renderer.xr.isPresenting) {
+    const head = new THREE.Vector3().setFromMatrixPosition(renderer.xr.getCamera().matrixWorld);
+    if (palmFacesHead(h, head)) { if (h.i === 0 && !calibrating) togglePause(); h.ignore = true; return; }
+    if (h.pos.distanceTo(head) < 0.1) { h.ignore = true; return; }
+  }
+  h.ignore = false;
+  if (paused) return;
   if (calibrating) { calibrate(h.pos); return; }
   const P = pickPart(h.pos);
+  lastActivity = clock;
   if (!P) return;
+  lastTouched = P;
   sound('tick');
   const o = hands[1 - h.i];
   if (o.grab && o.grab.P === P && isLoose(P)) {
@@ -462,6 +472,8 @@ function onPinchEnd(h) {
   }
   if (g.mode === 'pullapart') return;
   const A = assemblyOf(g.P);
+  if (g.P.inspect) { g.P.inspect = false; g.P.scale = 1; if (g.P.mode === 'free') { const pp = new THREE.Vector3(), q = new THREE.Quaternion(), sc = new THREE.Vector3(); g.P.world.decompose(pp, q, sc); g.P.world.compose(pp, q, new THREE.Vector3(1, 1, 1)); } }
+  sound('drop');
   if (o.grab && A.includes(o.grab.P)) return; // the other hand is still holding this assembly
   if (g.mode === 'free' && nearBench(g.P)) toBench(A);
   trySnap(A);
@@ -474,6 +486,15 @@ function onHandMove(h, dt) {
   if (g.mode === 'free') {
     const M = handMatrix(h);
     for (const [P, rel] of g.rels) if (P.mode === 'free') P.world.multiplyMatrices(M, rel);
+    if (renderer.xr.isPresenting && g.rels.size === 1 && isLoose(g.P)) {
+      const head = new THREE.Vector3().setFromMatrixPosition(renderer.xr.getCamera().matrixWorld), pp = new THREE.Vector3().setFromMatrixPosition(g.P.world);
+      const want = pp.distanceTo(head) < 0.3 ? 2 : 1;
+      if (want > 1) g.P.inspect = true;
+      if (g.P.inspect) {
+        g.P.scale += (want - g.P.scale) * 0.12;
+        const q = new THREE.Quaternion(), sc = new THREE.Vector3(); g.P.world.decompose(pp, q, sc); g.P.world.compose(pp, q, new THREE.Vector3(g.P.scale, g.P.scale, g.P.scale));
+      }
+    }
   } else if (g.mode === 'bench') {
     const l = benchLocal(h.pos), A = assemblyOf(g.P);
     const liftH = hasPeg(A) ? 0.13 : 0.09;
@@ -519,15 +540,16 @@ let pokeCooldown = 0;
 function jointPos(J) { return J.peg != null ? null : portWorld(J.a, J.ai); }
 function poke(tip) {
   if (pokeCooldown > 0) return false;
-  for (const btn of buttons) { const w = btn.mesh.getWorldPosition(new THREE.Vector3()); if (btn.mesh.visible && tip.distanceTo(w) < 0.022) { btn.fn(); pokeCooldown = 1; sound('click'); return true; } }
+  for (const btn of buttons) { const w = btn.mesh.getWorldPosition(new THREE.Vector3()); if (btn.mesh.visible && tip.distanceTo(w) < 0.022) { btn.fn(); pokeCooldown = 1; sound('press'); btn.pressT = 0.25; return true; } }
   for (const J of joints) {
     if (J.type !== 'pin' && J.type !== 'fixed') continue;
+    if (J.a.mode !== 'bench' || (J.b && J.b.mode !== 'bench') || held(J.a) || (J.b && held(J.b))) continue;
     const p = jointPos(J); if (!p) continue;
     const top = p.clone().add(UP.clone().multiplyScalar(0.008));
-    if (tip.distanceTo(top) < 0.012) {
+    if (tip.distanceTo(top) < 0.013) {
       if (J.type === 'pin') { J.type = 'fixed'; J.th0 = J.a.th - J.b.th; makeMarker(J); }
       else { J.type = 'pin'; scene.remove(J.marker); J.marker = null; }
-      pokeCooldown = 0.8; sound('click'); return true;
+      pokeCooldown = 0.8; sound('press'); flash(p, 0x1f2c45); return true;
     }
   }
   return false;
@@ -539,8 +561,9 @@ function audio() { if (!actx) { try { actx = new (window.AudioContext || window.
 function sound(kind) {
   if (!actx) return;
   const t = actx.currentTime, o = actx.createOscillator(), g = actx.createGain();
+  if (kind === 'note') { const f = arguments[1] || 784, o = actx.createOscillator(), g = actx.createGain(); o.type = 'triangle'; o.frequency.setValueAtTime(f, t); g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.25, t + 0.02); g.gain.exponentialRampToValueAtTime(0.001, t + 0.9); o.connect(g).connect(actx.destination); o.start(t); o.stop(t + 0.95); return; }
   if (kind === 'chime') { [880, 1320].forEach((f, k) => { const o = actx.createOscillator(), g = actx.createGain(), t0 = t + k * 0.11; o.type = 'sine'; o.frequency.setValueAtTime(f, t0); g.gain.setValueAtTime(0.0001, t0); g.gain.exponentialRampToValueAtTime(0.22, t0 + 0.02); g.gain.exponentialRampToValueAtTime(0.001, t0 + 0.5); o.connect(g).connect(actx.destination); o.start(t0); o.stop(t0 + 0.55); }); return; }
-  const spec = { click: [1500, 900, 0.05, 0.25], pop: [420, 160, 0.12, 0.3], tick: [2200, 2000, 0.02, 0.06] }[kind];
+  const spec = { click: [1500, 900, 0.05, 0.25], pop: [420, 160, 0.12, 0.3], tick: [2200, 2000, 0.02, 0.08], drop: [520, 380, 0.06, 0.1], press: [1000, 1000, 0.03, 0.18] }[kind];
   o.frequency.setValueAtTime(spec[0], t); o.frequency.exponentialRampToValueAtTime(spec[1], t + spec[2]);
   g.gain.setValueAtTime(spec[3], t); g.gain.exponentialRampToValueAtTime(0.001, t + spec[2] + 0.04);
   o.connect(g).connect(actx.destination); o.start(t); o.stop(t + spec[2] + 0.05);
@@ -557,11 +580,22 @@ function textTexture(lines, w = 1024, h = 256) {
 }
 const panel = new THREE.Mesh(new THREE.PlaneGeometry(0.32, 0.08), new THREE.MeshBasicMaterial({ map: textTexture(['Pinch on your table', 'to place the bench']), transparent: true }));
 panel.visible = false; scene.add(panel);
+function tablePlaneY(p) { // a detected horizontal plane near the pinch, if the browser offers plane detection
+  try {
+    const frame = renderer.xr.getFrame(), ref = renderer.xr.getReferenceSpace();
+    if (!frame || !frame.detectedPlanes) return null;
+    let best = null;
+    frame.detectedPlanes.forEach(pl => { if (pl.orientation !== 'horizontal') return; const pose = frame.getPose(pl.planeSpace, ref); if (!pose) return; const y = pose.transform.position.y; if (Math.abs(y - p.y) < 0.08 && (best == null || Math.abs(y - p.y) < Math.abs(best - p.y))) best = y; });
+    return best;
+  } catch (e) { return null; }
+}
+let benchIntro = 1;
 function calibrate(p) {
+  const planeY = tablePlaneY(p);
   const xrCam = renderer.xr.getCamera();
   const head = new THREE.Vector3().setFromMatrixPosition(xrCam.matrixWorld);
   const f = new THREE.Vector3(0, 0, -1).applyQuaternion(new THREE.Quaternion().setFromRotationMatrix(xrCam.matrixWorld)); f.y = 0; f.normalize();
-  bench.position.set(head.x + f.x * 0.42, p.y - 0.012, head.z + f.z * 0.42);
+  bench.position.set(head.x + f.x * 0.42, planeY != null ? planeY + 0.003 : p.y - 0.012, head.z + f.z * 0.42); benchIntro = 0;
   bench.rotation.set(0, Math.atan2(-f.x, -f.z), 0);
   calibrating = false; panel.visible = false; setBenchVisible(true); sound('click');
 }
@@ -569,7 +603,7 @@ function setBenchVisible(v) { bench.visible = v; for (const P of parts) P.mesh.v
 const buttons = [];
 function makeButton(label, x, z, fn) {
   const m = new THREE.Mesh(new THREE.CylinderGeometry(0.016, 0.016, 0.01, 24), [std(0xf0a03c), new THREE.MeshBasicMaterial({ map: textTexture([label], 256, 256) }), std(0xf0a03c)]);
-  m.position.set(x, 0.012, z); bench.add(m); buttons.push({ mesh: m, fn });
+  m.position.set(x, 0.012, z); bench.add(m); buttons.push({ mesh: m, fn, pressT: 0 });
 }
 makeButton('reset', 0.34, 0.24, () => resetParts());
 makeButton('move', 0.34, 0.18, () => { calibrating = true; panel.visible = true; setBenchVisible(false); });
@@ -612,7 +646,7 @@ function updateVisuals() {
   const held = new Set(); for (const h of hands) if (h.grab && h.grab.mode !== 'pullapart') held.add(assemblyOf(h.grab.P)[0]);
   for (const h of hands) {
     if (!h.grab || h.grab.mode === 'pullapart') continue;
-    const cands = findCandidates(assemblyOf(h.grab.P), SNAP_GLOW).slice(0, 3);
+    const cands = findCandidates(assemblyOf(h.grab.P), SNAP_GLOW).slice(0, 1);
     for (const c of cands) {
       const strong = c.d < SNAP_DIST, col = strong ? 0xe6f6ff : 0x7fc4ff, sc = strong ? 1.8 : 1.35;
       if (c.P.rings[c.i]) { c.P.rings[c.i].material.color.setHex(col); c.P.rings[c.i].scale.setScalar(sc); }
@@ -626,10 +660,11 @@ function updateVisuals() {
   let n = 0; const m = new THREE.Matrix4();
   for (const h of hands) {
     const ring = pinchRings[h.i];
-    ring.visible = h.tracked && renderer.xr.isPresenting;
-    if (ring.visible) { ring.position.copy(h.pos); ring.quaternion.copy(h.quat); ring.material.color.setHex(h.pinch ? 0xf0a03c : (pickPart(h.pos) ? 0x7fc4ff : 0xdfe9f7)); ring.material.opacity = h.pinch ? 1 : 0.6; }
+    const near = h.tracked && pickPart(h.pos), ready = Math.max(0, Math.min(1, (0.07 - (h.pinchD || 0.07)) / 0.05));
+    ring.visible = h.tracked && renderer.xr.isPresenting && !paused && (h.pinch || !!near || ready > 0.3);
+    if (ring.visible) { ring.position.copy(h.pos); ring.quaternion.copy(h.quat); ring.material.color.setHex(h.pinch ? 0xf0a03c : (near ? 0x7fc4ff : 0xdfe9f7)); ring.material.opacity = h.pinch ? 1 : 0.3 + 0.6 * ready; ring.scale.setScalar(h.pinch ? 1 : 1.8 - 0.8 * ready); }
     if (!h.xr || !h.tracked) continue;
-    for (const name in h.xr.joints) { const j = h.xr.joints[name]; if (!j.visible || n >= 60) continue; const r = (j.jointRadius || 0.008) * 0.8; m.compose(j.getWorldPosition(_v), _q.identity(), _s.set(r, r, r)); handJoints.setMatrixAt(n++, m); }
+    for (const name in h.xr.joints) { const j = h.xr.joints[name]; if (!j.visible || n >= 60) continue; const r = (j.jointRadius || 0.008) * (passthrough ? 1.15 : 0.8); m.compose(j.getWorldPosition(_v), _q.identity(), _s.set(r, r, r)); handJoints.setMatrixAt(n++, m); }
   }
   handJoints.count = n; handJoints.instanceMatrix.needsUpdate = true;
   if (calibrating) {
@@ -645,14 +680,20 @@ for (let i = 0; i < 2; i++) {
   hg.addEventListener('connected', e => { const h = hands[e.data.handedness === 'left' ? 0 : 1]; h.xr = hg; hg.userData.h = h; });
   hg.addEventListener('disconnected', () => { const h = hg.userData.h; if (h) { h.tracked = false; if (h.pinch) { h.pinch = false; } h.xr = null; } });
 }
-function readXRHands() {
+function readXRHands(dt) {
   for (const h of hands) {
     if (h.test || !h.xr) continue;
     const it = h.xr.joints['index-finger-tip'], th = h.xr.joints['thumb-tip'], wr = h.xr.joints['wrist'];
     h.tracked = !!(it && th && wr && it.visible && th.visible);
-    if (!h.tracked) { h.pinch = false; continue; }
+    if (!h.tracked) {
+      h.lostT = (h.lostT || 0) + dt;
+      if (h.grab && h.lostT > 0.5) setDown(h);
+      else if (!h.grab) h.pinch = false;
+      continue;
+    }
+    h.lostT = 0;
     const a = it.getWorldPosition(new THREE.Vector3()), b = th.getWorldPosition(new THREE.Vector3());
-    const d = a.distanceTo(b);
+    const d = a.distanceTo(b); h.pinchD = d;
     h.pinch = h.pinch ? d < PINCH_OFF : d < PINCH_ON;
     h.pos.copy(a).add(b).multiplyScalar(0.5);
     wr.getWorldQuaternion(h.quat);
@@ -784,8 +825,8 @@ const STEPS = [
     enter() { this.lo = Infinity; this.hi = -Infinity; },
     tick() { const J = joints.find(J => J.type === 'rail'); if (!J) return; const S = J.a, R = J.b, [dx, dz] = rot(1, 0, R.th), t = (S.x - R.x) * dx + (S.z - R.z) * dz; this.lo = Math.min(this.lo, t); this.hi = Math.max(this.hi, t); },
     check() { return this.hi - this.lo > 0.1; } },
-  { title: 'Stretch to look closer', text: 'Pinch the long bar with both hands and pull your hands apart (on a computer: scroll over it).',
-    learn: 'Two hands scale a loose part up for a closer look. It returns to size when you connect it.',
+  { title: 'Look closer', text: 'Pick up the long bar and bring it close to your face: it grows so you can see the detail. Or pinch it with both hands and pull apart. (On a computer: scroll over it.)',
+    learn: 'Bring a loose part close (or stretch it with two hands) to look closer. It goes back to size when you let go or connect it.',
     check: () => parts.some(P => P.scale > 1.4) },
   { title: 'Take something apart', text: 'Pinch any connected part and pull it firmly away from its group.',
     learn: 'Pull hard to undo a joint.', enter() { this.d0 = detachCount; }, check() { return detachCount > this.d0; } }
@@ -862,15 +903,16 @@ function guideTick(dt) {
   if (guide.doneT > 0) { guide.doneT += dt; if (guide.doneT > 1.2) enterStep(guide.i + 1); return; }
   if (s.tick) s.tick(dt);
   if (s.check.call(s)) {
-    guide.doneT = 0.001; guide.dirty = true; clearGhosts(); sound('chime');
+    guide.doneT = 0.001; guide.dirty = true; clearGhosts(); rewardStep(guide.i);
     if (s.learn && !guide.learned.includes(s.learn)) guide.learned.push(s.learn);
   }
 }
 // the board beside the bench: current step on top, what you've learned below
 const boardCanvas = document.createElement('canvas'); boardCanvas.width = 1024; boardCanvas.height = 1344; boardCanvas.id = 'board';
 const boardTex = new THREE.CanvasTexture(boardCanvas); boardTex.colorSpace = THREE.SRGBColorSpace;
-const board = new THREE.Mesh(new THREE.PlaneGeometry(0.28, 0.3675), new THREE.MeshBasicMaterial({ map: boardTex, transparent: true }));
-board.position.set(-0.47, 0.19, 0.02); board.rotation.set(-0.12, 0.5, 0, 'YXZ'); bench.add(board);
+const board = new THREE.Mesh(new THREE.PlaneGeometry(0.34, 0.44625), new THREE.MeshBasicMaterial({ map: boardTex, transparent: true, opacity: 0.94 }));
+// beyond the far edge of the bench: ~1 m from the eyes, inside the forward view, tilted up toward the player
+board.position.set(0, 0.26, -0.5); board.rotation.set(-0.18, 0, 0); bench.add(board);
 function wrap(x, text, maxW) { const words = text.split(' '), lines = []; let line = ''; for (const w of words) { const t = line ? line + ' ' + w : w; if (x.measureText(t).width > maxW && line) { lines.push(line); line = w; } else line = t; } if (line) lines.push(line); return lines; }
 function drawBoard() {
   const x = boardCanvas.getContext('2d'), W = 1024, H = 1344, pad = 56;
@@ -879,12 +921,14 @@ function drawBoard() {
   let y = 92;
   const s = STEPS[guide.i];
   x.fillStyle = '#f0a03c'; x.font = '600 34px system-ui, sans-serif';
-  x.fillText(guide.finished ? 'ALL DONE' : `STEP ${guide.i + 1} OF ${STEPS.length}`, pad, y);
+  const chapter = i => (i < 5 ? 'BASICS' : i < 9 ? 'FRAMES' : i < 13 ? 'MOTION' : 'EXTRAS');
+  x.fillText(paused ? 'PAUSED' : guide.finished ? 'ALL DONE' : `${chapter(guide.i)} · STEP ${guide.i + 1} OF ${STEPS.length}`, pad, y);
   y += 72; x.fillStyle = '#f6efdf'; x.font = '700 62px system-ui, sans-serif';
-  x.fillText(guide.finished ? 'Free play' : s.title, pad, y);
+  x.fillText(paused ? 'Taking a break' : guide.finished ? 'Free play' : s.title, pad, y);
   y += 60; x.font = '400 40px system-ui, sans-serif'; x.fillStyle = '#e3e6ee';
-  for (const l of wrap(x, guide.finished ? 'You’ve tried every interaction. Build anything you like, or press reset to start again.' : s.text, W - pad * 2)) { x.fillText(l, pad, y); y += 52; }
-  if (guide.doneT > 0) { y += 10; x.fillStyle = '#5fbf6a'; x.font = '700 48px system-ui, sans-serif'; x.fillText('✓ Nice!', pad, y); y += 30; }
+  const body = paused ? 'Nothing moves while you rest. Turn your left palm toward you and pinch to carry on (on a computer: press P).' : guide.finished ? 'You’ve tried every interaction. Build anything you like, or press reset to start again.' : s.text;
+  for (const l of wrap(x, body, W - pad * 2)) { x.fillText(l, pad, y); y += 52; }
+  if (guide.doneT > 0 && !paused) { y += 10; x.fillStyle = '#5fbf6a'; x.font = '700 48px system-ui, sans-serif'; x.fillText(guide.i === 4 ? '✓ Basics done: the first bar of the song!' : '✓ Nice!  ♪', pad, y); y += 30; }
   y += 34; x.strokeStyle = 'rgba(246,239,223,0.25)'; x.lineWidth = 3; x.beginPath(); x.moveTo(pad, y); x.lineTo(W - pad, y); x.stroke();
   y += 62; x.fillStyle = '#f0a03c'; x.font = '600 34px system-ui, sans-serif'; x.fillText('WHAT YOU’VE LEARNED', pad, y);
   y += 20;
@@ -906,24 +950,144 @@ document.body.appendChild(boardCanvas);
 document.getElementById('back').addEventListener('click', () => { audio(); enterStep(guide.i - 1); });
 document.getElementById('skip').addEventListener('click', () => { audio(); if (STEPS[guide.i]) enterStep(guide.i + 1); });
 
+// ---------- Meta design guidelines: feedback, comfort and safety helpers ----------
+let passthrough = false, paused = false, lastActivity = 0;
+// a visual twin for every click: a ring that pulses out from the joint
+const flashes = [0, 1, 2, 3].map(() => { const m = new THREE.Mesh(new THREE.TorusGeometry(0.01, 0.0018, 8, 28), new THREE.MeshBasicMaterial({ color: 0xe6f6ff, transparent: true, depthWrite: false })); m.rotation.x = Math.PI / 2; m.visible = false; m.userData.t = 1; scene.add(m); return m; });
+function flash(p, color = 0xe6f6ff) { const m = flashes.find(f => f.userData.t >= 1) || flashes[0]; m.position.copy(p).add(new THREE.Vector3(0, 0.008, 0)); m.material.color.setHex(color); m.userData.t = 0; m.visible = true; m.quaternion.copy(bench.quaternion).multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), Math.PI / 2)); }
+function updateFlashes(dt) { for (const m of flashes) { if (m.userData.t >= 1) { m.visible = false; continue; } m.userData.t = Math.min(1, m.userData.t + dt / 0.35); m.scale.setScalar(1 + 2.2 * m.userData.t); m.material.opacity = 1 - m.userData.t; } }
+// lost tracking while holding something: keep it for half a second, then set it down gently (no snapping)
+function setDown(h) {
+  const g = h.grab; h.grab = null; h.pinch = false; h.wasPinch = false;
+  if (!g) return;
+  const o = hands[1 - h.i];
+  if (g.mode === 'scale') { scaleState = null; if (o.grab && o.grab.mode === 'scale') o.grab = null; }
+  if (g.mode === 'pullapart') return;
+  const A = assemblyOf(g.P);
+  if (g.P.mode === 'free') { toBench(A); for (const P of A) { P.x = Math.max(-0.28, Math.min(0.28, P.x)); P.z = Math.max(BENCH.d0 + 0.02, Math.min(BENCH.d1 - 0.02, P.z)); } }
+  g.P.scale = isLoose(g.P) && g.P.inspect ? 1 : g.P.scale; g.P.inspect = false;
+  sound('drop');
+}
+// palm turned toward your face = the system / options gesture: never treat it as a grab
+function palmFacesHead(h, head) {
+  if (h.test || !h.xr || !h.xr.joints.wrist) return false;
+  const w = h.xr.joints.wrist.getWorldPosition(new THREE.Vector3()), n = new THREE.Vector3(0, -1, 0).applyQuaternion(h.quat);
+  return n.dot(head.clone().sub(w).normalize()) > 0.55;
+}
+function togglePause() { paused = !paused; guide.dirty = true; sound('press'); }
+addEventListener('keydown', e => { if (e.key === 'p' || e.key === 'P') togglePause(); });
+// hover: a cool rim light on the part your fingers are near (separate from the orange "use this" glow)
+let hovered = new Set();
+function updateHover() {
+  for (const P of hovered) if (!glowing.has(P)) P.mesh.traverse(o => { if (o.isMesh && o.material.emissive && !P.rings.includes(o)) o.material.emissive.setHex(0x000000); });
+  hovered = new Set();
+  for (const h of hands) {
+    if (!h.tracked || h.grab || h.pinch) continue;
+    const P = pickPart(h.pos); if (!P || glowing.has(P)) continue;
+    hovered.add(P); P.mesh.traverse(o => { if (o.isMesh && o.material.emissive && !P.rings.includes(o)) o.material.emissive.setHex(0x1d3a50); });
+  }
+}
+// grabbed: the part lifts a little and casts a soft shadow on the bench
+const shadowTex = (() => { const c = document.createElement('canvas'); c.width = c.height = 64; const x = c.getContext('2d'), g = x.createRadialGradient(32, 32, 2, 32, 32, 32); g.addColorStop(0, 'rgba(0,0,0,0.45)'); g.addColorStop(1, 'rgba(0,0,0,0)'); x.fillStyle = g; x.fillRect(0, 0, 64, 64); return new THREE.CanvasTexture(c); })();
+const shadows = hands.map(() => { const m = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), new THREE.MeshBasicMaterial({ map: shadowTex, transparent: true, depthWrite: false })); m.rotation.x = -Math.PI / 2; m.visible = false; bench.add(m); return m; });
+function updateShadows() {
+  hands.forEach((h, k) => {
+    const m = shadows[k]; m.visible = false;
+    if (!h.grab || h.grab.mode === 'pullapart') return;
+    const P = h.grab.P, p = P.mode === 'bench' ? new THREE.Vector3(P.x, 0, P.z) : benchLocal(new THREE.Vector3().setFromMatrixPosition(P.world));
+    if (Math.abs(p.x) > 0.34 || p.z < BENCH.d0 - 0.05 || p.z > BENCH.d1 + 0.05) return;
+    const r = radiusOf(P) * 2.2 * (P.mode === 'free' ? Math.max(0.6, 1 - (p.y || 0) * 2) : 1);
+    m.position.set(p.x, 0.0009, p.z); m.scale.set(r, r, 1); m.visible = true;
+  });
+}
+// hands in passthrough: a depth-only mask so your real hands show in front of virtual parts (never a full virtual hand)
+const FINGERS = [['thumb-metacarpal', 'thumb-phalanx-proximal', 'thumb-phalanx-distal', 'thumb-tip']].concat(['index-finger', 'middle-finger', 'ring-finger', 'pinky-finger'].map(f => [f + '-metacarpal', f + '-phalanx-proximal', f + '-phalanx-intermediate', f + '-phalanx-distal', f + '-tip']));
+const BONES = [];
+for (const chain of FINGERS) { BONES.push(['wrist', chain[0]]); for (let k = 0; k < chain.length - 1; k++) BONES.push([chain[k], chain[k + 1]]); }
+BONES.push(['index-finger-phalanx-proximal', 'middle-finger-phalanx-proximal'], ['middle-finger-phalanx-proximal', 'ring-finger-phalanx-proximal'], ['ring-finger-phalanx-proximal', 'pinky-finger-phalanx-proximal'], ['wrist', 'middle-finger-phalanx-proximal'], ['thumb-metacarpal', 'index-finger-phalanx-proximal']);
+const maskMat = new THREE.MeshBasicMaterial({ colorWrite: false });
+const handVisibleMat = new THREE.MeshBasicMaterial({ color: 0xdfe9f7, transparent: true, opacity: 0.55 });
+const handBones = new THREE.InstancedMesh(new THREE.CylinderGeometry(1, 1, 1, 10), handVisibleMat, BONES.length * 2);
+handBones.frustumCulled = false; handBones.count = 0; handBones.renderOrder = -1; scene.add(handBones);
+function updateHandMask() {
+  const mat = passthrough ? maskMat : handVisibleMat;
+  handBones.material = mat; handJoints.material = mat; handJoints.renderOrder = -1;
+  let n = 0; const m = new THREE.Matrix4(), a = new THREE.Vector3(), b = new THREE.Vector3(), q = new THREE.Quaternion(), Y = new THREE.Vector3(0, 1, 0);
+  for (const h of hands) {
+    if (!h.xr || !h.tracked) continue;
+    for (const [u, v] of BONES) {
+      const ju = h.xr.joints[u], jv = h.xr.joints[v]; if (!ju || !jv || !ju.visible || !jv.visible) continue;
+      ju.getWorldPosition(a); jv.getWorldPosition(b);
+      const len = a.distanceTo(b); if (len < 1e-4) continue;
+      const r = Math.max(0.006, ((ju.jointRadius || 0.008) + (jv.jointRadius || 0.008)) * 0.55);
+      q.setFromUnitVectors(Y, b.clone().sub(a).normalize());
+      m.compose(a.clone().add(b).multiplyScalar(0.5), q, _s.set(r, len, r)); handBones.setMatrixAt(n++, m);
+    }
+  }
+  handBones.count = n; handBones.instanceMatrix.needsUpdate = true;
+}
+// each finished step plays the next note of a little tune, and a paper note floats up (sound and sight together)
+const MELODY = [523, 587, 659, 784, 659, 880, 784, 659, 587, 659, 784, 1047, 880, 784, 1047];
+const noteGeoHead = new THREE.SphereGeometry(0.008, 12, 8), noteGeoStem = new THREE.BoxGeometry(0.0022, 0.03, 0.0022);
+const floatNotes = [0, 1, 2, 3, 4].map(() => { const g = new THREE.Group(), mat = new THREE.MeshBasicMaterial({ color: 0xf0a03c, transparent: true }); const hd = new THREE.Mesh(noteGeoHead, mat); hd.scale.set(1.2, 0.8, 1); const st = new THREE.Mesh(noteGeoStem, mat); st.position.set(0.008, 0.015, 0); g.add(hd, st); g.visible = false; g.userData = { t: 1, mat }; scene.add(g); return g; });
+function floatNote(p) { const g = floatNotes.find(n => n.userData.t >= 1) || floatNotes[0]; g.position.copy(p); g.userData.t = 0; g.userData.y0 = p.y; g.visible = true; }
+function updateNotes(dt) { const cam = renderer.xr.isPresenting ? renderer.xr.getCamera() : camera, cp = new THREE.Vector3().setFromMatrixPosition(cam.matrixWorld); for (const g of floatNotes) { if (g.userData.t >= 1) { g.visible = false; continue; } g.userData.t = Math.min(1, g.userData.t + dt / 1.6); g.position.y = g.userData.y0 + 0.18 * g.userData.t; g.position.x += Math.sin(clock * 6) * 0.0004; g.userData.mat.opacity = 1 - g.userData.t * g.userData.t; g.lookAt(cp.x, g.position.y, cp.z); } }
+let lastTouched = null;
+function rewardStep(i) {
+  const at = lastTouched ? (lastTouched.mode === 'bench' ? benchWorld(lastTouched.x, 0.03, lastTouched.z) : new THREE.Vector3().setFromMatrixPosition(lastTouched.world)) : benchWorld(0.05, 0.03, 0.025);
+  floatNote(at);
+  if (i === 4) { [0, 1, 2, 3, 4].forEach(k => setTimeout(() => sound('note', MELODY[k]), k * 170)); [0.12, 0.3].forEach(d => setTimeout(() => floatNote(at.clone().add(new THREE.Vector3(d - 0.2, 0, 0))), d * 900)); }
+  else sound('note', MELODY[i % MELODY.length]);
+}
+// a ghost hand shows the pinch over the part to use (steps 1-2, or whenever you have been idle for 20 s)
+const ghostHand = new THREE.Group();
+{
+  // a slim outline-like hand: palm behind the part (toward you), thumb and index reaching down to it
+  const mat = new THREE.MeshBasicMaterial({ color: 0xeaf4ff, transparent: true, opacity: 0.3, depthWrite: false });
+  const palm = new THREE.Mesh(new THREE.CapsuleGeometry(0.018, 0.02, 4, 10), mat); palm.rotation.x = Math.PI / 2; palm.scale.set(1, 1, 0.45); palm.position.set(0, 0.05, 0.065); ghostHand.add(palm);
+  const mk = (x, len) => { const piv = new THREE.Group(); piv.position.set(x, 0.045, 0.045); piv.rotation.x = -0.75; const f = new THREE.Mesh(new THREE.CapsuleGeometry(0.0055, len, 4, 8), mat); f.position.set(0, -len / 2, 0); piv.add(f); ghostHand.add(piv); return piv; };
+  ghostHand.userData.index = mk(0.009, 0.05); ghostHand.userData.thumb = mk(-0.012, 0.04);
+  ghostHand.visible = false; bench.add(ghostHand);
+}
+function updateGhostHand() {
+  ghostHand.visible = false;
+  if (calibrating || paused || guide.doneT > 0 || hands.some(h => h.grab)) return;
+  if (!(guide.i <= 1 || clock - lastActivity > 20)) return;
+  const f = CUES[guide.i]; if (!f) return;
+  const c = f().find(c => c && c.P && c.P.mode === 'bench'); if (!c) return;
+  const t = (clock % 2.4) / 2.4, ease = u => u * u * (3 - 2 * u);
+  let y, close;
+  if (t < 0.35) { y = 0.1 - 0.075 * ease(t / 0.35); close = 0; }
+  else if (t < 0.5) { y = 0.025; close = (t - 0.35) / 0.15; }
+  else if (t < 0.85) { y = 0.025 + 0.06 * ease((t - 0.5) / 0.35); close = 1; }
+  else { y = 0.085; close = 1 - (t - 0.85) / 0.15; }
+  ghostHand.position.set(c.P.x, y + layerY(c.P) - 0.01, c.P.z);
+  ghostHand.userData.index.rotation.z = 0.2 - 0.18 * close; ghostHand.userData.thumb.rotation.z = -0.35 + 0.3 * close;
+  ghostHand.visible = true;
+}
+
 // ---------- main loop ----------
 let lastT = performance.now();
 function update(dt) {
   clock += dt; pokeCooldown = Math.max(0, pokeCooldown - dt);
-  if (renderer.xr.isPresenting) readXRHands();
+  if (renderer.xr.isPresenting) readXRHands(dt);
   for (const h of hands) {
+    if (h.lostT) continue; // frozen while tracking is lost
     if (h.pinch && !h.wasPinch) onPinchStart(h);
-    else if (!h.pinch && h.wasPinch) onPinchEnd(h);
+    else if (!h.pinch && h.wasPinch) { if (h.ignore) h.ignore = false; else onPinchEnd(h); h.releasedT = clock; }
     h.wasPinch = h.pinch;
   }
   stackParts();
   drags.length = 0;
-  for (const h of hands) onHandMove(h, dt);
-  solve();
+  if (!paused) { for (const h of hands) if (!h.lostT && !h.ignore) onHandMove(h, dt); solve(); }
   checkBreaks(dt);
-  if (renderer.xr.isPresenting) for (const h of hands) if (h.tracked && !h.pinch && h.tipPrev.y - h.tip.y > 0.0005) poke(h.tip);
-  guideTick(dt);
-  updateCues();
+  if (renderer.xr.isPresenting && !paused) for (const h of hands) if (h.tracked && !h.pinch && !h.grab && clock - (h.releasedT || -9) > 0.4 && h.tipPrev.y - h.tip.y > 0.0005) poke(h.tip);
+  board.visible = renderer.xr.isPresenting;
+  if (!paused) guideTick(dt);
+  updateCues(); updateHover(); updateShadows(); updateGhostHand(); updateFlashes(dt); updateNotes(dt);
+  if (renderer.xr.isPresenting) updateHandMask();
+  for (const b of buttons) { b.pressT = Math.max(0, b.pressT - dt); b.mesh.position.y = 0.012 - 0.007 * Math.min(1, b.pressT / 0.12); }
+  if (benchIntro < 1) { benchIntro = Math.min(1, benchIntro + dt / 0.5); const e = 1 - Math.pow(1 - benchIntro, 3); bench.scale.setScalar(0.85 + 0.15 * e); }
   if (guide.dirty || guide.doneT > 0) { drawBoard(); guide.dirty = false; }
   updateTrails();
   updateVisuals();
@@ -945,7 +1109,8 @@ async function setupXR() {
   enterBtn.textContent = ar ? 'Enter mixed reality' : 'Enter VR';
   enterBtn.addEventListener('click', async () => {
     audio();
-    const session = await navigator.xr.requestSession(ar ? 'immersive-ar' : 'immersive-vr', { requiredFeatures: ['local-floor'], optionalFeatures: ['hand-tracking'] });
+    const session = await navigator.xr.requestSession(ar ? 'immersive-ar' : 'immersive-vr', { requiredFeatures: ['local-floor'], optionalFeatures: ['hand-tracking', 'plane-detection'] });
+    passthrough = ar;
     if (ar) scene.background = null;
     await renderer.xr.setSession(session);
     calibrating = true; panel.visible = true; setBenchVisible(false);
