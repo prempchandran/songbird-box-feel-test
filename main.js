@@ -227,7 +227,10 @@ function findCandidates(A, maxD) {
         });
       }
       const l = benchLocal(pw);
-      if (!hasPeg(A) && Math.abs(l.y) < 0.1) pegs.forEach((g, k) => {
+      const own = joints.find(J => J.peg != null && J.a === P), thisPegged = joints.some(J => J.peg != null && J.a === P && J.ai === i);
+      const swing = own && !thisPegged && A.length === 1 && P.mode === 'bench' && !P.r;
+      if ((!hasPeg(A) || swing) && Math.abs(l.y) < 0.1) pegs.forEach((g, k) => {
+        if (swing) { const o = pegs[own.peg], pt = P.ports[i], q = P.ports[own.ai], span = Math.hypot(pt.x - q.x, pt.z - q.z) * P.scale; if (k === own.peg || Math.abs(Math.hypot(g.x - o.x, g.z - o.z) - span) > 0.004) return; }
         const d = Math.hypot(l.x - g.x, l.z - g.z) + (P.mode === 'free' ? Math.abs(l.y) * 0.3 : 0) + 0.004;
         if (d < maxD) out.push({ kind: 'peg', P, i, peg: k, d });
       });
@@ -276,7 +279,20 @@ function trySnap(A) {
     const g = pegs[c.peg];
     if (!hasPeg(A)) { const [ax, az] = portBench(c.P, c.i); translateAssembly(A, g.x - ax, g.z - az); }
     addJoint({ type: 'peg', a: c.P, ai: c.i, peg: c.peg });
-    if (!c.P.r) c.P.ports.forEach((pt, i) => { if (i === c.i || pt.type !== 'pin') return; const [x, z] = portBench(c.P, i); const k = pegs.findIndex(q => Math.hypot(q.x - x, q.z - z) < COINCIDE); if (k >= 0) addJoint({ type: 'peg', a: c.P, ai: i, peg: k }); });
+    if (A.length === 1 && !c.P.r && joints.filter(J => J.a === c.P && J.peg != null).length === 1) {
+      const q = c.P.ports[c.i]; let best = null;
+      c.P.ports.forEach((pt, i) => {
+        if (i === c.i || pt.type !== 'pin') return;
+        const [x, z] = portBench(c.P, i), span = Math.hypot(pt.x - q.x, pt.z - q.z) * c.P.scale;
+        pegs.forEach((h, k) => { if (k === c.peg) return; const d = Math.hypot(h.x - x, h.z - z); if (d < SNAP_DIST * 1.4 && Math.abs(Math.hypot(h.x - g.x, h.z - g.z) - span) < 0.004 && (!best || d < best.d)) best = { i, k, d, x, z }; });
+      });
+      if (best) {
+        const h = pegs[best.k], a0 = Math.atan2(best.z - g.z, best.x - g.x), a1 = Math.atan2(h.z - g.z, h.x - g.x);
+        rotateAssembly(A, g.x, g.z, a1 - a0);
+        addJoint({ type: 'peg', a: c.P, ai: best.i, peg: best.k });
+      }
+    }
+    if (!c.P.r) c.P.ports.forEach((pt, i) => { if (i === c.i || pt.type !== 'pin' || joints.some(J => J.a === c.P && J.ai === i && J.peg != null)) return; const [x, z] = portBench(c.P, i); const k = pegs.findIndex(q => Math.hypot(q.x - x, q.z - z) < COINCIDE); if (k >= 0) addJoint({ type: 'peg', a: c.P, ai: i, peg: k }); });
   } else if (c.kind === 'rail') {
     const S = c.P, R = c.R;
     let d = R.th - S.th; d = Math.atan2(Math.sin(d), Math.cos(d));
@@ -722,10 +738,11 @@ function square() {
 }
 const held = P => hands.some(h => h.grab && h.grab.P === P);
 const STEPS = [
-  { title: 'Pick up a part', text: 'Find the bar with the orange arrow over it. Pinch it between your thumb and finger, then lift your hand: the bar comes up with you.',
+  { title: 'Pick up a part', text: 'Find the bar with the orange arrow over it. Pinch it between your thumb and finger and lift your hand: the bar comes with you. (On a computer: drag it.)',
     learn: 'Pinch to grab. Lift your hand to pick a part up off the bench.',
     ghosts() { addGhost('bar10', 0.05, 0.075); pegTarget(0, 0.075); pegTarget(0.1, 0.075); },
-    check: () => hands.some(h => h.grab && h.grab.mode === 'free') },
+    enter() { this.starts = new Map(parts.map(P => [P, [P.x, P.z]])); },
+    check() { return hands.some(h => h.grab && (h.grab.mode === 'free' || (h.grab.mode === 'bench' && this.starts.has(h.grab.P) && Math.hypot(h.grab.P.x - this.starts.get(h.grab.P)[0], h.grab.P.z - this.starts.get(h.grab.P)[1]) > 0.03))); } },
   { title: 'Pin it to the pegs', text: 'Follow the dotted path and lay the bar on the outline, over the two orange pegs. When its blue rings light up, let go: it clicks in.',
     learn: 'Blue rings are ports. Bring one near a peg until it glows, let go, and the part is pinned there.',
     ghosts() { addGhost('bar10', 0.05, 0.075); pegTarget(0, 0.075); pegTarget(0.1, 0.075); }, check: () => !!square().B },
