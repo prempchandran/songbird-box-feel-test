@@ -5,7 +5,7 @@ import * as THREE from 'three';
 
 const TAU = Math.PI * 2;
 const SNAP_GLOW = 0.05, SNAP_DIST = 0.025, COINCIDE = 0.007;
-const PINCH_ON = 0.02, PINCH_OFF = 0.04, PICK_DIST = 0.022;
+const PINCH_ON = 0.02, PINCH_OFF = 0.04, PICK_DIST = 0.026;
 const BREAK_DIST = 0.1, BREAK_TIME = 0.45;
 const ITER = 24, TRAIL_LIFE = 1.6;
 const BENCH = { w: 0.60, d0: -0.28, d1: 0.29 };
@@ -411,15 +411,15 @@ function solve() {
 const hands = [0, 1].map(i => ({ i, name: i ? 'right' : 'left', tracked: false, pinch: false, wasPinch: false, pos: new THREE.Vector3(), quat: new THREE.Quaternion(), tip: new THREE.Vector3(), tipPrev: new THREE.Vector3(), grab: null, test: false, xr: null }));
 const handMatrix = h => new THREE.Matrix4().compose(h.pos, h.quat, new THREE.Vector3(1, 1, 1));
 
-function pickPart(p) {
-  let best = null, bd = PICK_DIST;
+function pickPart(p, reach = PICK_DIST) {
+  let best = null, bd = reach;
   const inv = new THREE.Matrix4(), q = new THREE.Vector3();
   for (const P of parts) {
     const W = worldMatrix(P);
     q.copy(p).applyMatrix4(inv.copy(W).invert());
     const hx = P.half[0], hy = P.half[1], hz = P.half[2];
-    const cx = Math.max(-hx, Math.min(hx, q.x)), cy = Math.max(0, Math.min(hy, q.y)), cz = Math.max(-hz, Math.min(hz, q.z));
-    const d = Math.hypot(q.x - cx, q.y - cy, q.z - cz) * P.scale - (P.mode === 'bench' ? (benchRank.get(P) || 0) * 0.0004 : 0);
+    const cx = Math.max(-hx, Math.min(hx, q.x)), cy = Math.max(P.mode === 'bench' ? -layerY(P) / P.scale : 0, Math.min(hy, q.y)), cz = Math.max(-hz, Math.min(hz, q.z));
+    const d = Math.hypot(q.x - cx, q.y - cy, q.z - cz) * P.scale - (P.mode === 'bench' ? (benchRank.get(P) || 0) * 0.001 : 0);
     if (d < bd) { bd = d; best = P; }
   }
   return best;
@@ -436,7 +436,7 @@ function onPinchStart(h) {
   h.ignore = false;
   if (paused) return;
   if (calibrating) { calibrate(h.pos); return; }
-  const P = pickPart(h.pos);
+  const P = pickPart(h.pos) || (h.near && clock - h.nearT < 0.3 ? h.near : null);
   lastActivity = clock;
   if (!P) return;
   lastTouched = P;
@@ -557,11 +557,22 @@ function poke(tip) {
 
 // ---------- sound ----------
 let actx = null;
+const audioState = () => actx ? actx.state : 'off';
 function audio() { if (!actx) { try { actx = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) {} } if (actx && actx.state === 'suspended') actx.resume(); }
 function sound(kind) {
   if (!actx) return;
   const t = actx.currentTime, o = actx.createOscillator(), g = actx.createGain();
   if (kind === 'note') { const f = arguments[1] || 784, o = actx.createOscillator(), g = actx.createGain(); o.type = 'triangle'; o.frequency.setValueAtTime(f, t); g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.25, t + 0.02); g.gain.exponentialRampToValueAtTime(0.001, t + 0.9); o.connect(g).connect(actx.destination); o.start(t); o.stop(t + 0.95); return; }
+  if (kind === 'click') {
+    const len = 0.06, buf = actx.createBuffer(1, Math.floor(actx.sampleRate * len), actx.sampleRate), d = buf.getChannelData(0);
+    for (let k = 0; k < d.length; k++) d[k] = (Math.random() * 2 - 1) * Math.pow(1 - k / d.length, 4);
+    const n = actx.createBufferSource(), bp = actx.createBiquadFilter(), ng = actx.createGain();
+    n.buffer = buf; bp.type = 'bandpass'; bp.frequency.value = 1800; bp.Q.value = 3; ng.gain.value = 0.9;
+    n.connect(bp).connect(ng).connect(actx.destination); n.start(t);
+    o.type = 'triangle'; o.frequency.setValueAtTime(1320, t); o.frequency.exponentialRampToValueAtTime(990, t + 0.08);
+    g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.35, t + 0.005); g.gain.exponentialRampToValueAtTime(0.001, t + 0.18);
+    o.connect(g).connect(actx.destination); o.start(t); o.stop(t + 0.2); return;
+  }
   if (kind === 'chime') { [880, 1320].forEach((f, k) => { const o = actx.createOscillator(), g = actx.createGain(), t0 = t + k * 0.11; o.type = 'sine'; o.frequency.setValueAtTime(f, t0); g.gain.setValueAtTime(0.0001, t0); g.gain.exponentialRampToValueAtTime(0.22, t0 + 0.02); g.gain.exponentialRampToValueAtTime(0.001, t0 + 0.5); o.connect(g).connect(actx.destination); o.start(t0); o.stop(t0 + 0.55); }); return; }
   const spec = { click: [1500, 900, 0.05, 0.25], pop: [420, 160, 0.12, 0.3], tick: [2200, 2000, 0.02, 0.08], drop: [520, 380, 0.06, 0.1], press: [1000, 1000, 0.03, 0.18] }[kind];
   o.frequency.setValueAtTime(spec[0], t); o.frequency.exponentialRampToValueAtTime(spec[1], t + spec[2]);
@@ -696,6 +707,7 @@ function readXRHands(dt) {
     const d = a.distanceTo(b); h.pinchD = d;
     h.pinch = h.pinch ? d < PINCH_OFF : d < PINCH_ON;
     h.pos.copy(a).add(b).multiplyScalar(0.5);
+    if (!h.pinch && !h.grab && d < 0.06) { const n = pickPart(h.pos, 0.035); if (n) { h.near = n; h.nearT = clock; } }
     wr.getWorldQuaternion(h.quat);
     h.tipPrev.copy(h.tip); h.tip.copy(a);
   }
@@ -1150,7 +1162,7 @@ function drawPerf() {
   x.fillText(`${st.fps.toFixed(1)} fps ${ok ? '\u2713' : '!'}`, 30, 125);
   x.fillStyle = '#e3e6ee'; x.font = '400 30px system-ui, sans-serif';
   x.fillText(`slow frames ${st.slowPct.toFixed(1)}% \u00b7 95th pct ${st.p95.toFixed(1)} ms`, 30, 178);
-  x.fillText(`${perf.calls} draws \u00b7 ${(perf.tris / 1000).toFixed(0)}k triangles`, 30, 222);
+  x.fillText(`${perf.calls} draws \u00b7 ${(perf.tris / 1000).toFixed(0)}k triangles \u00b7 sound ${audioState()}`, 30, 222);
   x.fillStyle = 'rgba(227,230,238,0.7)'; x.fillText(`over ${st.secs.toFixed(0)} s: ${st.sessionFps.toFixed(1)} fps avg`, 30, 266);
   perfTex.needsUpdate = true;
   const d = document.getElementById('perf'); if (d) d.textContent = `${perf.calls} draws · ${(perf.tris / 1000).toFixed(0)}k triangles · ${st.fps.toFixed(0)} fps (browser)`;
@@ -1184,6 +1196,9 @@ async function setupXR() {
     await renderer.xr.setSession(session);
     // ask for a steady 72 Hz (Meta's minimum refresh rate for Quest apps)
     try { if (session.updateTargetFrameRate && session.supportedFrameRates) { const rates = [...session.supportedFrameRates]; const want = rates.includes(72) ? 72 : Math.min(...rates.filter(r => r >= 72)); if (isFinite(want)) { await session.updateTargetFrameRate(want); perf.target = want; } } } catch (e) {}
+    for (const ev of ['selectstart', 'select', 'squeezestart']) session.addEventListener(ev, audio);
+    document.addEventListener('visibilitychange', audio);
+    audio(); setTimeout(() => sound('chime'), 400);
     perfReset(); lastFrameT = 0;
     calibrating = true; panel.visible = true; setBenchVisible(false);
     session.addEventListener('end', () => { scene.background = deskBg; calibrating = false; panel.visible = false; setBenchVisible(true); bench.position.set(0, 0.75, -0.43); bench.rotation.set(0, 0, 0); });
@@ -1205,5 +1220,6 @@ window.__ft = {
   gearPairs: () => [...gearPairs.values()].map(g => [g.A.id, g.B.id]),
   trails: () => parts.map(P => P.trailPts.length),
   freeY: P => benchLocal(new THREE.Vector3().setFromMatrixPosition(P.world)).y,
+  screen(x, y, z) { const v = benchWorld(x, y, z).project(camera); return [(v.x + 1) / 2 * innerWidth, (1 - v.y) / 2 * innerHeight]; }, pick(x, y, z) { const P = pickPart(benchWorld(x, y, z)); return P && P.id; },
   reset: resetParts, perf, perfStats, perfCanvas, guide, STEPS, enterStep, square: () => { const s = square(); return Object.fromEntries(Object.entries(s).map(([k, v]) => [k, v && v.id])); }
 };
