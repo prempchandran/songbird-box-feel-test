@@ -557,10 +557,28 @@ function poke(tip) {
 
 // ---------- sound ----------
 let actx = null;
+const VERSION = 'v8';
 const audioState = () => actx ? actx.state : 'off';
+// backup sound path: small WAV clips played through <audio>, for when Web Audio stays suspended
+function makeWav(fn, len) {
+  const rate = 22050, n = Math.floor(rate * len), buf = new ArrayBuffer(44 + n * 2), v = new DataView(buf);
+  const w = (o, str) => { for (let k = 0; k < str.length; k++) v.setUint8(o + k, str.charCodeAt(k)); };
+  w(0, 'RIFF'); v.setUint32(4, 36 + n * 2, true); w(8, 'WAVEfmt '); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+  v.setUint32(24, rate, true); v.setUint32(28, rate * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true); w(36, 'data'); v.setUint32(40, n * 2, true);
+  for (let k = 0; k < n; k++) v.setInt16(44 + k * 2, Math.max(-1, Math.min(1, fn(k / rate))) * 30000, true);
+  return URL.createObjectURL(new Blob([buf], { type: 'audio/wav' }));
+}
+const WAVS = {
+  click: makeWav(t => (Math.sin(2 * Math.PI * 1320 * t) * 0.5 + (Math.random() * 2 - 1) * 0.5 * Math.exp(-t * 80)) * Math.exp(-t * 30), 0.18),
+  note: makeWav(t => Math.sin(2 * Math.PI * 784 * t) * 0.5 * Math.min(1, t * 60) * Math.exp(-t * 4), 0.9),
+  chime: makeWav(t => (Math.sin(2 * Math.PI * 880 * t) + Math.sin(2 * Math.PI * 1320 * t) * 0.6) * 0.35 * Math.exp(-t * 3), 1.0),
+};
+const tags = {};
+function unlockTags() { for (const k in WAVS) { if (!tags[k]) tags[k] = new Audio(WAVS[k]); const a = tags[k]; a.muted = true; a.play().then(() => { a.pause(); a.currentTime = 0; a.muted = false; }).catch(() => {}); } }
+function tagSound(kind) { const a = tags[kind === 'note' ? 'note' : kind === 'chime' ? 'chime' : 'click']; if (!a) return; try { a.currentTime = 0; a.muted = false; a.play().catch(() => {}); } catch (e) {} }
 function audio() { if (!actx) { try { actx = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) {} } if (actx && actx.state === 'suspended') actx.resume(); }
 function sound(kind) {
-  if (!actx) return;
+  if (!actx || actx.state !== 'running') { if (kind === 'click' || kind === 'note' || kind === 'chime') tagSound(kind); if (!actx) return; }
   const t = actx.currentTime, o = actx.createOscillator(), g = actx.createGain();
   if (kind === 'note') { const f = arguments[1] || 784, o = actx.createOscillator(), g = actx.createGain(); o.type = 'triangle'; o.frequency.setValueAtTime(f, t); g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.25, t + 0.02); g.gain.exponentialRampToValueAtTime(0.001, t + 0.9); o.connect(g).connect(actx.destination); o.start(t); o.stop(t + 0.95); return; }
   if (kind === 'click') {
@@ -617,13 +635,14 @@ function makeButton(label, x, z, fn) {
   m.position.set(x, 0.012, z); bench.add(m); buttons.push({ mesh: m, fn, pressT: 0 });
 }
 makeButton('reset', 0.34, 0.24, () => resetParts());
+makeButton('sound', 0.34, 0.12, () => { audio(); unlockTags(); setTimeout(() => sound('chime'), 60); });
 makeButton('move', 0.34, 0.18, () => { calibrating = true; panel.visible = true; setBenchVisible(false); });
 
 // ---------- trails ----------
 const TRAIL_MAX = 1600;
 const trailMesh = new THREE.InstancedMesh(new THREE.SphereGeometry(1, 8, 6), new THREE.MeshBasicMaterial({ color: 0xf0a03c, transparent: true, opacity: 0.85 }), TRAIL_MAX);
 trailMesh.frustumCulled = false; scene.add(trailMesh);
-let clock = 0;
+let clock = 0, lastAudio = null;
 function updateTrails() {
   let n = 0; const m = new THREE.Matrix4();
   for (const P of parts) {
@@ -728,7 +747,7 @@ function mouseToHand(e) {
   const hit = new THREE.Vector3();
   if (ray.ray.intersectPlane(plane, hit)) { h.pos.copy(hit); h.quat.copy(bench.quaternion); h.tracked = true; }
 }
-canvas.addEventListener('pointerdown', e => { audio(); mouseToHand(e); mouseDown = true; hands[1].pinch = true; lastMouse = e; });
+canvas.addEventListener('pointerdown', e => { audio(); unlockTags(); mouseToHand(e); mouseDown = true; hands[1].pinch = true; lastMouse = e; });
 addEventListener('pointermove', e => { lastMouse = e; mouseToHand(e); });
 addEventListener('pointerup', () => { mouseDown = false; if (!hands[1].test) hands[1].pinch = false; });
 canvas.addEventListener('wheel', e => { const P = pickPart(hands[1].pos); if (P && isLoose(P) && P.mode === 'bench') { P.scale = Math.max(0.5, Math.min(3, P.scale * (e.deltaY < 0 ? 1.1 : 1 / 1.1))); } e.preventDefault(); }, { passive: false });
@@ -838,7 +857,9 @@ const STEPS = [
   { title: 'Close the square', text: 'Lay the last bar across the top so both of its rings meet the tops of the side bars.',
     learn: 'Bring a bar’s two rings to two ports at once and it closes the loop.',
     ghosts() { addGhost('bar10', 0.05, -0.025); }, check: () => !!square().T },
-  { title: 'Push the top', text: 'Pinch the top bar and push it sideways. Watch what the square does.',
+  { title: 'Push the top', text: 'Put your thumb and finger either side of the middle of the top bar (it glows blue when they are on it). Pinch, keep pinching, and slide your hand sideways along the table. Keep your hand low.',
+    hint() { const { T } = square(); return T && held(T) ? 'Got it! Keep pinching and slide your hand sideways along the table, about a hand’s width.' : null; },
+    tick() { const { T } = square(), h = !!(T && held(T)); if (h !== this.wasHeld) { this.wasHeld = h; guide.dirty = true; } },
     learn: 'Four pins make a linkage: the square leans over. It’s a shape that moves.',
     enter() { const { T } = square(); this.t0 = T ? [T.x, T.z] : null; },
     check() { const { T } = square(); return !!(T && this.t0 && Math.hypot(T.x - this.t0[0], T.z - this.t0[1]) > 0.025); } },
@@ -969,7 +990,7 @@ function drawBoard() {
   y += 72; x.fillStyle = '#f6efdf'; x.font = '700 62px system-ui, sans-serif';
   x.fillText(paused ? 'Taking a break' : guide.finished ? 'Free play' : s.title, pad, y);
   y += 60; x.font = '400 40px system-ui, sans-serif'; x.fillStyle = '#e3e6ee';
-  const body = paused ? 'Nothing moves while you rest. Turn your left palm toward you and pinch to carry on (on a computer: press P).' : guide.finished ? 'You’ve tried every interaction. Build anything you like, or press reset to start again.' : s.text;
+  const body = paused ? 'Nothing moves while you rest. Turn your left palm toward you and pinch to carry on (on a computer: press P).' : (s && s.hint && s.hint()) || (guide.finished ? 'You’ve tried every interaction. Build anything you like, or press reset to start again.' : s.text);
   for (const l of wrap(x, body, W - pad * 2)) { x.fillText(l, pad, y); y += 52; }
   if (guide.doneT > 0 && !paused) { y += 10; x.fillStyle = '#5fbf6a'; x.font = '700 48px system-ui, sans-serif'; x.fillText(guide.i === 4 ? '✓ Basics done: the first bar of the song!' : '✓ Nice!  ♪', pad, y); y += 30; }
   y += 34; x.strokeStyle = 'rgba(246,239,223,0.25)'; x.lineWidth = 3; x.beginPath(); x.moveTo(pad, y); x.lineTo(W - pad, y); x.stroke();
@@ -986,6 +1007,9 @@ function drawBoard() {
   });
   const rows = Math.ceil(guide.learned.length / cols), last = guide.learned[guide.learned.length - 1];
   if (last != null && STEPS[last]) { let yy = top0 + rows * (th + gap) + 30; x.fillStyle = 'rgba(227,230,238,0.8)'; x.font = '400 30px system-ui, sans-serif'; for (const l of wrap(x, STEPS[last].learn, W - pad * 2)) { if (yy > H - 24) break; x.fillText(l, pad, yy); yy += 38; } }
+  const as = audioState();
+  x.font = '400 28px system-ui, sans-serif'; x.fillStyle = as === 'running' ? 'rgba(227,230,238,0.55)' : '#f0a03c';
+  x.fillText(`${VERSION} · sound ${as === 'running' ? 'on' : as === 'off' ? 'not started' : 'blocked'}${as === 'running' ? '' : ': tap the orange sound button on the bench'}`, pad, H - 36);
   boardTex.needsUpdate = true;
 }
 makeButton('back', -0.37, 0.27, () => enterStep(guide.i - 1));
@@ -1133,6 +1157,7 @@ function update(dt) {
   if (renderer.xr.isPresenting) updateHandMask();
   for (const b of buttons) { b.pressT = Math.max(0, b.pressT - dt); b.mesh.position.y = 0.012 - 0.007 * Math.min(1, b.pressT / 0.12); }
   if (benchIntro < 1) { benchIntro = Math.min(1, benchIntro + dt / 0.5); const e = 1 - Math.pow(1 - benchIntro, 3); bench.scale.setScalar(0.85 + 0.15 * e); }
+  if (audioState() !== lastAudio) { lastAudio = audioState(); guide.dirty = true; }
   if (guide.dirty || guide.doneT > 0) { drawBoard(); guide.dirty = false; }
   updateTrails();
   updateVisuals();
@@ -1188,7 +1213,7 @@ async function setupXR() {
   enterBtn.hidden = false;
   enterBtn.textContent = ar ? 'Enter mixed reality' : 'Enter VR';
   enterBtn.addEventListener('click', async () => {
-    audio();
+    audio(); unlockTags();
     const session = await navigator.xr.requestSession(ar ? 'immersive-ar' : 'immersive-vr', { requiredFeatures: ['local-floor'], optionalFeatures: ['hand-tracking', 'plane-detection'] });
     passthrough = ar;
     if (ar) scene.background = null;
@@ -1196,7 +1221,7 @@ async function setupXR() {
     await renderer.xr.setSession(session);
     // ask for a steady 72 Hz (Meta's minimum refresh rate for Quest apps)
     try { if (session.updateTargetFrameRate && session.supportedFrameRates) { const rates = [...session.supportedFrameRates]; const want = rates.includes(72) ? 72 : Math.min(...rates.filter(r => r >= 72)); if (isFinite(want)) { await session.updateTargetFrameRate(want); perf.target = want; } } } catch (e) {}
-    for (const ev of ['selectstart', 'select', 'squeezestart']) session.addEventListener(ev, audio);
+    for (const ev of ['selectstart', 'select', 'squeezestart']) session.addEventListener(ev, () => { audio(); unlockTags(); });
     document.addEventListener('visibilitychange', audio);
     audio(); setTimeout(() => sound('chime'), 400);
     perfReset(); lastFrameT = 0;
