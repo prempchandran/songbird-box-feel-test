@@ -558,7 +558,7 @@ function poke(tip) {
 
 // ---------- sound ----------
 let actx = null;
-const VERSION = 'v9';
+const VERSION = 'v10';
 const audioState = () => actx ? actx.state : 'off';
 // backup sound path: small WAV clips played through <audio>, for when Web Audio stays suspended
 function makeWav(fn, len) {
@@ -748,7 +748,7 @@ function mouseToHand(e) {
   const hit = new THREE.Vector3();
   if (ray.ray.intersectPlane(plane, hit)) { h.pos.copy(hit); h.quat.copy(bench.quaternion); h.tracked = true; }
 }
-canvas.addEventListener('pointerdown', e => { try { canvas.setPointerCapture(e.pointerId); } catch (_) {} audio(); unlockTags(); mouseToHand(e); mouseDown = true; hands[1].pinch = true; lastMouse = e; });
+canvas.addEventListener('pointerdown', e => { try { canvas.setPointerCapture(e.pointerId); } catch (_) {} audio(); unlockTags(); mouseToHand(e); { const P = pickPart(hands[1].pos), q = square(); lastPress = !P ? 'nothing' : P === q.T ? 'top' : P === q.L ? 'left' : P === q.R ? 'right' : P === q.B ? 'bottom' : P.kind; } mouseDown = true; hands[1].pinch = true; lastMouse = e; });
 addEventListener('pointermove', e => { lastMouse = e; mouseToHand(e); });
 addEventListener('pointerup', () => { mouseDown = false; if (!hands[1].test) hands[1].pinch = false; });
 canvas.addEventListener('wheel', e => { const P = pickPart(hands[1].pos); if (P && isLoose(P) && P.mode === 'bench') { P.scale = Math.max(0.5, Math.min(3, P.scale * (e.deltaY < 0 ? 1.1 : 1 / 1.1))); } e.preventDefault(); }, { passive: false });
@@ -841,6 +841,25 @@ function square() {
   return { B, L, R, T: null };
 }
 const held = P => hands.some(h => h.grab && h.grab.P === P);
+// the square must be free to lean: only the bottom bar stays on pegs, and no corner is locked
+let freed = 0;
+function freeSquare() {
+  const q = square(); if (!q.T) return;
+  const sq = [q.B, q.L, q.R, q.T];
+  for (const J of [...joints]) {
+    if (J.peg != null && J.a !== q.B && sq.includes(J.a)) { removeJoint(J); freed++; }
+    else if (J.type === 'fixed' && sq.includes(J.a) && sq.includes(J.b)) { J.type = 'pin'; if (J.marker) { scene.remove(J.marker); J.marker = null; } freed++; }
+  }
+}
+let lastPress = '-';
+function squareDebug() {
+  const q = square(); if (!q.B) return 'no bottom bar on its pegs';
+  const nm = P => !P ? 'none' : P === q.T ? 'top' : P === q.L ? 'left' : P === q.R ? 'right' : P === q.B ? 'bottom' : P.kind;
+  const pegs = P => P ? joints.filter(J => J.a === P && J.peg != null).length : '-';
+  const locked = joints.filter(J => J.type === 'fixed').length;
+  const g = hands[1].grab || hands[0].grab;
+  return `pegs B${pegs(q.B)} L${pegs(q.L)} R${pegs(q.R)} T${pegs(q.T)} · locked ${locked} · freed ${freed} · press ${lastPress} · holding ${g ? nm(g.P) : 'none'} · moved ${STEPS[5].t0 && q.T ? Math.round(Math.hypot(q.T.x - STEPS[5].t0[0], q.T.z - STEPS[5].t0[1]) * 1000) : '-'}mm`;
+}
 const STEPS = [
   { title: 'Pick up a part', text: 'Find the bar with the orange arrow over it. Pinch it between your thumb and finger and lift your hand: the bar comes with you. (On a computer: drag it.)',
     learn: 'Pinch to grab. Lift your hand to pick a part up off the bench.',
@@ -860,9 +879,9 @@ const STEPS = [
     ghosts() { addGhost('bar10', 0.05, -0.025); }, check: () => !!square().T },
   { title: 'Push the top', text: 'Put your thumb and finger either side of the middle of the top bar (it glows blue when they are on it). Pinch, keep pinching, and slide your hand sideways along the table. Keep your hand low. (On a computer: press and hold on the top bar, then drag left or right.)',
     hint() { const q = square(); return q.T && [q.T, q.L, q.R].some(held) ? 'Got it! Keep holding and slide sideways, about a hand’s width. Watch the sides lean over.' : null; },
-    tick() { const q = square(), h = !!(q.T && [q.T, q.L, q.R].some(held)); if (h !== this.wasHeld) { this.wasHeld = h; guide.dirty = true; } if (q.T && !this.t0) { this.t0 = [q.T.x, q.T.z]; this.a0 = q.L.th - q.B.th; } },
+    tick() { freeSquare(); if (Math.floor(clock * 4) !== this.dbgT) { this.dbgT = Math.floor(clock * 4); guide.dirty = true; } const q = square(), h = !!(q.T && [q.T, q.L, q.R].some(held)); if (h !== this.wasHeld) { this.wasHeld = h; guide.dirty = true; } if (q.T && !this.t0) { this.t0 = [q.T.x, q.T.z]; this.a0 = q.L.th - q.B.th; } },
     learn: 'Four pins make a linkage: the square leans over. It’s a shape that moves.',
-    enter() { const q = square(); this.t0 = q.T ? [q.T.x, q.T.z] : null; this.a0 = q.T ? q.L.th - q.B.th : 0; },
+    enter() { freeSquare(); const q = square(); this.t0 = q.T ? [q.T.x, q.T.z] : null; this.a0 = q.T ? q.L.th - q.B.th : 0; },
     check() { const q = square(); if (!q.T || !this.t0) return false; const da = Math.abs(Math.atan2(Math.sin(q.L.th - q.B.th - this.a0), Math.cos(q.L.th - q.B.th - this.a0))); return Math.hypot(q.T.x - this.t0[0], q.T.z - this.t0[1]) > 0.02 || da > 0.2; } },
   { title: 'Add the brace', text: 'Click the long diagonal bar onto the bottom-left corner, then swing its other end to the top-right corner.',
     learn: 'A diagonal splits the square into two triangles.',
@@ -1010,6 +1029,7 @@ function drawBoard() {
   if (last != null && STEPS[last]) { let yy = top0 + rows * (th + gap) + 30; x.fillStyle = 'rgba(227,230,238,0.8)'; x.font = '400 30px system-ui, sans-serif'; for (const l of wrap(x, STEPS[last].learn, W - pad * 2)) { if (yy > H - 24) break; x.fillText(l, pad, yy); yy += 38; } }
   const as = audioState();
   x.font = '400 28px system-ui, sans-serif'; x.fillStyle = as === 'running' ? 'rgba(227,230,238,0.55)' : '#f0a03c';
+  if (guide.i === 5) { x.font = '400 24px system-ui, sans-serif'; x.fillStyle = 'rgba(227,230,238,0.55)'; x.fillText(squareDebug(), pad, H - 80); x.font = '400 28px system-ui, sans-serif'; x.fillStyle = as === 'running' ? 'rgba(227,230,238,0.55)' : '#f0a03c'; }
   x.fillText(`${VERSION} · sound ${as === 'running' ? 'on' : as === 'off' ? 'not started' : 'blocked'}${as === 'running' ? '' : ': tap the orange sound button on the bench'}`, pad, H - 36);
   boardTex.needsUpdate = true;
 }
