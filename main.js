@@ -21,9 +21,11 @@ const scene = new THREE.Scene();
 const deskBg = new THREE.Color(0x1b2436);
 scene.background = deskBg;
 const camera = new THREE.PerspectiveCamera(50, innerWidth / innerHeight, 0.01, 20);
-function fitCamera() { // pull back in tall or narrow windows so the whole bench stays in view
-  const k = Math.max(1, 1.5 / (innerWidth / innerHeight));
+function fitCamera() { // pull back in tall or narrow windows so the whole bench stays in view, beside the board
+  const boardW = Math.min(330, innerWidth * 0.42) + 24, free = Math.max(200, innerWidth - boardW);
+  const k = Math.max(1, 1.5 / (free / innerHeight));
   camera.position.set(0, 0.75 + 0.45 * k, -0.43 + 0.41 * k); camera.lookAt(0, 0.75, -0.43);
+  camera.setViewOffset(innerWidth, innerHeight, boardW / 2, 0, innerWidth, innerHeight);
 }
 fitCamera();
 scene.add(new THREE.HemisphereLight(0xfff4e0, 0x3a3020, 1.3));
@@ -475,7 +477,14 @@ function onPinchEnd(h) {
   if (g.P.inspect) { g.P.inspect = false; g.P.scale = 1; if (g.P.mode === 'free') { const pp = new THREE.Vector3(), q = new THREE.Quaternion(), sc = new THREE.Vector3(); g.P.world.decompose(pp, q, sc); g.P.world.compose(pp, q, new THREE.Vector3(1, 1, 1)); } }
   sound('drop');
   if (o.grab && A.includes(o.grab.P)) return; // the other hand is still holding this assembly
-  if (g.mode === 'free' && nearBench(g.P)) toBench(A);
+  if (g.mode === 'free') {
+    toBench(A);
+    // keep it on the bench: nudge the whole assembly back inside the edges
+    const lo = (f) => Math.max(...A.map(f)), hi = (f) => Math.min(...A.map(f)), cl = (v, a, b) => Math.min(Math.max(v, a), Math.max(a, b));
+    const dx = cl(0, lo(P => -BENCH.w / 2 + 0.04 - P.x), hi(P => BENCH.w / 2 - 0.04 - P.x));
+    const dz = cl(0, lo(P => BENCH.d0 + 0.04 - P.z), hi(P => BENCH.d1 - 0.04 - P.z));
+    for (const P of A) { P.x += dx; P.z += dz; }
+  }
   trySnap(A);
 }
 let scaleState = null;
@@ -558,7 +567,7 @@ function poke(tip) {
 
 // ---------- sound ----------
 let actx = null;
-const VERSION = 'v11';
+const VERSION = 'v12';
 const audioState = () => actx ? actx.state : 'off';
 // backup sound path: small WAV clips played through <audio>, for when Web Audio stays suspended
 function makeWav(fn, len) {
@@ -901,9 +910,12 @@ const STEPS = [
     learn: 'The small gear spins three times as fast, the other way. A circle trail means rotary motion.',
     enter() { const G = parts.find(P => P.kind === 'gearL'); this.th0 = G ? G.th : 0; },
     check() { const G = parts.find(P => P.kind === 'gearL'); return !!G && Math.abs(G.th - this.th0) > 1.2; } },
-  { title: 'Slider on the rail', text: 'Put the orange slider on the rail at the back. The rail’s slot glows when it lines up.',
+  { title: 'Slider on the rail', text: 'Find the small orange block with a ring (the slider). Drag it onto the long cream rail with the dark slot. When the slot glows blue, let go: the slider clicks into the slot.',
+    enter() { const R = parts.find(P => P.kind === 'rail'), S = parts.find(P => P.kind === 'slider'); for (const P of [R, S]) if (P && P.mode === 'free') { detachPart(P); toBench([P]); P.scale = 1; } if (R && (Math.abs(R.x) > BENCH.w / 2 || R.z < BENCH.d0 || R.z > BENCH.d1)) { R.x = 0.16; R.z = -0.2; R.th = 0; } },
     learn: 'A rail joint: the slider can only move along the rail.',
-    ghosts() { addGhost('slider', 0.16, -0.2); }, check: () => joints.some(J => J.type === 'rail') },
+    ghosts() { const R = parts.find(P => P.kind === 'rail'); if (R) { addGhost('slider', R.x, R.z, R.th); this.gp = [R.x, R.z, R.th]; } },
+    tick() { const R = parts.find(P => P.kind === 'rail'); if (R && this.gp && Math.hypot(R.x - this.gp[0], R.z - this.gp[1]) + Math.abs(R.th - this.gp[2]) * 0.05 > 0.01) { clearGhosts(); this.ghosts(); } },
+    check: () => joints.some(J => J.type === 'rail') },
   { title: 'Slide it', text: 'Push the slider along the rail from one end to the other.',
     learn: 'A straight trail means linear motion. The slider stops at the rail’s ends.',
     enter() { this.lo = Infinity; this.hi = -Infinity; },
@@ -935,7 +947,7 @@ const CUES = [
   () => { const s = square(); return s.B ? [{ pt: portBench(s.B, 0) }] : []; },
   () => [{ P: parts.find(P => P.kind === 'gearS'), to: [-0.2, -0.125] }, { P: parts.find(P => P.kind === 'gearL'), to: [-0.1, -0.125] }],
   () => { const G = parts.find(P => P.kind === 'gearL'); return G ? [{ pt: wpt(G, G.r * 0.8, 0) }] : []; },
-  () => [{ P: parts.find(P => P.kind === 'slider'), to: [0.16, -0.2] }],
+  () => { const R = parts.find(P => P.kind === 'rail'); return [{ P: parts.find(P => P.kind === 'slider'), to: R ? [R.x, R.z] : [0.16, -0.2] }]; },
   () => [{ P: parts.find(P => P.kind === 'slider') }],
   () => [{ P: parts.find(P => P.kind === 'bar20') }],
   () => [{ P: square().T || parts.find(P => !isLoose(P) && P.kind !== 'rail') }]
