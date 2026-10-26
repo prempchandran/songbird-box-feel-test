@@ -567,7 +567,7 @@ function poke(tip) {
 
 // ---------- sound ----------
 let actx = null;
-const VERSION = 'v12';
+const VERSION = 'v13';
 const audioState = () => actx ? actx.state : 'off';
 // backup sound path: small WAV clips played through <audio>, for when Web Audio stays suspended
 function makeWav(fn, len) {
@@ -760,7 +760,11 @@ function mouseToHand(e) {
 canvas.addEventListener('pointerdown', e => { try { canvas.setPointerCapture(e.pointerId); } catch (_) {} audio(); unlockTags(); mouseToHand(e); { const P = pickPart(hands[1].pos), q = square(); lastPress = !P ? 'nothing' : P === q.T ? 'top' : P === q.L ? 'left' : P === q.R ? 'right' : P === q.B ? 'bottom' : P.kind; } mouseDown = true; hands[1].pinch = true; lastMouse = e; });
 addEventListener('pointermove', e => { lastMouse = e; mouseToHand(e); });
 addEventListener('pointerup', () => { mouseDown = false; if (!hands[1].test) hands[1].pinch = false; });
-canvas.addEventListener('wheel', e => { const P = pickPart(hands[1].pos); if (P && isLoose(P) && P.mode === 'bench') { P.scale = Math.max(0.5, Math.min(3, P.scale * (e.deltaY < 0 ? 1.1 : 1 / 1.1))); } e.preventDefault(); }, { passive: false });
+// desktop scaling: the loose part under the pointer (or, in the "Look closer" step, the long bar) grows or shrinks
+function scaleTarget() { const P = pickPart(hands[1].pos, 0.04); if (P && isLoose(P) && P.mode === 'bench') return P; if (guide.i === 13) { const L = parts.find(Q => Q.kind === 'bar20'); if (L && isLoose(L) && L.mode === 'bench') return L; } return null; }
+function scaleBy(P, f) { P.scale = Math.max(0.5, Math.min(3, P.scale * f)); guide.dirty = true; }
+addEventListener('wheel', e => { if (renderer.xr.isPresenting) return; const P = scaleTarget(); if (P) scaleBy(P, Math.exp(Math.max(-0.25, Math.min(0.25, -e.deltaY * 0.002)))); e.preventDefault(); }, { passive: false });
+addEventListener('keydown', e => { if (e.key !== '+' && e.key !== '=' && e.key !== '-') return; const P = scaleTarget(); if (P) scaleBy(P, e.key === '-' ? 1 / 1.15 : 1.15); });
 canvas.addEventListener('dblclick', () => { const tip = hands[1].pos.clone(); pokeCooldown = 0; for (const J of joints) { const p = jointPos(J); if (p && p.distanceTo(tip) < 0.02) { poke(p.clone().add(UP.clone().multiplyScalar(0.008))); break; } } });
 
 // ---------- parts layout ----------
@@ -921,7 +925,8 @@ const STEPS = [
     enter() { this.lo = Infinity; this.hi = -Infinity; },
     tick() { const J = joints.find(J => J.type === 'rail'); if (!J) return; const S = J.a, R = J.b, [dx, dz] = rot(1, 0, R.th), t = (S.x - R.x) * dx + (S.z - R.z) * dz; this.lo = Math.min(this.lo, t); this.hi = Math.max(this.hi, t); },
     check() { return this.hi - this.lo > 0.1; } },
-  { title: 'Look closer', text: 'Pick up the long bar and bring it close to your face: it grows so you can see the detail. Or pinch it with both hands and pull apart. (On a computer: scroll over it.)',
+  { title: 'Look closer', text: 'Make the long bar (the one with the arrow) bigger, to see its detail. On a Quest: pick it up and bring it close to your face, or pinch it with both hands and pull them apart. On a computer: point at it and scroll up with two fingers on the trackpad, or press the + key.',
+    hint() { const L = parts.find(P => P.kind === 'bar20'); return L && L.scale > 1.02 && L.scale <= 1.4 ? `Growing: ${L.scale.toFixed(1)}× its size. Keep going until it’s 1.5×.` : null; },
     learn: 'Bring a loose part close (or stretch it with two hands) to look closer. It goes back to size when you let go or connect it.',
     check: () => parts.some(P => P.scale > 1.4) },
   { title: 'Take something apart', text: 'Pinch any connected part and pull it firmly away from its group.',
