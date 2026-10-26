@@ -528,7 +528,8 @@ function checkBreaks(dt) {
     const [wx, wz] = wpt(d.P, d.local[0], d.local[1]);
     const far = Math.hypot(wx - d.tx, wz - d.tz) > BREAK_DIST;
     g.stretch = far ? g.stretch + dt : 0;
-    if (g.stretch > BREAK_TIME && !isLoose(d.P)) {
+    const sq = (guide.i === 5 || guide.i === 7) ? square() : {};
+    if (g.stretch > BREAK_TIME && !isLoose(d.P) && ![sq.T, sq.L, sq.R, sq.B].includes(d.P)) {
       detachPart(d.P); g.stretch = 0;
       d.P.x += d.tx - wx; d.P.z += d.tz - wz;
     }
@@ -557,7 +558,7 @@ function poke(tip) {
 
 // ---------- sound ----------
 let actx = null;
-const VERSION = 'v8';
+const VERSION = 'v9';
 const audioState = () => actx ? actx.state : 'off';
 // backup sound path: small WAV clips played through <audio>, for when Web Audio stays suspended
 function makeWav(fn, len) {
@@ -747,7 +748,7 @@ function mouseToHand(e) {
   const hit = new THREE.Vector3();
   if (ray.ray.intersectPlane(plane, hit)) { h.pos.copy(hit); h.quat.copy(bench.quaternion); h.tracked = true; }
 }
-canvas.addEventListener('pointerdown', e => { audio(); unlockTags(); mouseToHand(e); mouseDown = true; hands[1].pinch = true; lastMouse = e; });
+canvas.addEventListener('pointerdown', e => { try { canvas.setPointerCapture(e.pointerId); } catch (_) {} audio(); unlockTags(); mouseToHand(e); mouseDown = true; hands[1].pinch = true; lastMouse = e; });
 addEventListener('pointermove', e => { lastMouse = e; mouseToHand(e); });
 addEventListener('pointerup', () => { mouseDown = false; if (!hands[1].test) hands[1].pinch = false; });
 canvas.addEventListener('wheel', e => { const P = pickPart(hands[1].pos); if (P && isLoose(P) && P.mode === 'bench') { P.scale = Math.max(0.5, Math.min(3, P.scale * (e.deltaY < 0 ? 1.1 : 1 / 1.1))); } e.preventDefault(); }, { passive: false });
@@ -857,19 +858,19 @@ const STEPS = [
   { title: 'Close the square', text: 'Lay the last bar across the top so both of its rings meet the tops of the side bars.',
     learn: 'Bring a bar’s two rings to two ports at once and it closes the loop.',
     ghosts() { addGhost('bar10', 0.05, -0.025); }, check: () => !!square().T },
-  { title: 'Push the top', text: 'Put your thumb and finger either side of the middle of the top bar (it glows blue when they are on it). Pinch, keep pinching, and slide your hand sideways along the table. Keep your hand low.',
-    hint() { const { T } = square(); return T && held(T) ? 'Got it! Keep pinching and slide your hand sideways along the table, about a hand’s width.' : null; },
-    tick() { const { T } = square(), h = !!(T && held(T)); if (h !== this.wasHeld) { this.wasHeld = h; guide.dirty = true; } },
+  { title: 'Push the top', text: 'Put your thumb and finger either side of the middle of the top bar (it glows blue when they are on it). Pinch, keep pinching, and slide your hand sideways along the table. Keep your hand low. (On a computer: press and hold on the top bar, then drag left or right.)',
+    hint() { const q = square(); return q.T && [q.T, q.L, q.R].some(held) ? 'Got it! Keep holding and slide sideways, about a hand’s width. Watch the sides lean over.' : null; },
+    tick() { const q = square(), h = !!(q.T && [q.T, q.L, q.R].some(held)); if (h !== this.wasHeld) { this.wasHeld = h; guide.dirty = true; } if (q.T && !this.t0) { this.t0 = [q.T.x, q.T.z]; this.a0 = q.L.th - q.B.th; } },
     learn: 'Four pins make a linkage: the square leans over. It’s a shape that moves.',
-    enter() { const { T } = square(); this.t0 = T ? [T.x, T.z] : null; },
-    check() { const { T } = square(); return !!(T && this.t0 && Math.hypot(T.x - this.t0[0], T.z - this.t0[1]) > 0.025); } },
+    enter() { const q = square(); this.t0 = q.T ? [q.T.x, q.T.z] : null; this.a0 = q.T ? q.L.th - q.B.th : 0; },
+    check() { const q = square(); if (!q.T || !this.t0) return false; const da = Math.abs(Math.atan2(Math.sin(q.L.th - q.B.th - this.a0), Math.cos(q.L.th - q.B.th - this.a0))); return Math.hypot(q.T.x - this.t0[0], q.T.z - this.t0[1]) > 0.02 || da > 0.2; } },
   { title: 'Add the brace', text: 'Click the long diagonal bar onto the bottom-left corner, then swing its other end to the top-right corner.',
     learn: 'A diagonal splits the square into two triangles.',
     ghosts() { addGhost('brace', 0.05, 0.025, -Math.PI / 4); pegTarget(0, 0.075); },
     check() { const Q = parts.find(P => P.kind === 'brace'), s = square(); return !!(Q && s.B && joints.filter(J => J.b && (J.a === Q || J.b === Q)).length >= 2 && assemblyOf(Q).includes(s.B)); } },
   { title: 'Push it again', text: 'Push the top bar sideways again, the same way as before.',
     learn: 'Triangles can’t change shape. Now it’s a frame: it holds.',
-    enter() { this.t = 0; }, tick(dt) { const { T } = square(); if (T && held(T)) this.t += dt; }, check() { return this.t > 1; } },
+    enter() { this.t = 0; }, tick(dt) { const q = square(); if (q.T && [q.T, q.L, q.R].some(held)) this.t += dt; }, check() { return this.t > 1; } },
   { title: 'Lock a joint', text: 'Tap one of the corner rings with your fingertip (on a computer: double-click it).',
     learn: 'Tap a ring to lock that joint (it turns into a square). Tap again to free it.',
     check: () => joints.some(J => J.type === 'fixed') },
