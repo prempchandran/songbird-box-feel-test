@@ -558,7 +558,7 @@ function poke(tip) {
 
 // ---------- sound ----------
 let actx = null;
-const VERSION = 'v10';
+const VERSION = 'v11';
 const audioState = () => actx ? actx.state : 'off';
 // backup sound path: small WAV clips played through <audio>, for when Web Audio stays suspended
 function makeWav(fn, len) {
@@ -768,7 +768,7 @@ function resetParts() {
   makePart('gearL', -0.10, -0.195);
   makePart('rail', 0.16, -0.20);
   setBenchVisible(bench.visible);
-  if (typeof guide !== 'undefined') { guide.learned = []; enterStep(0); }
+  if (typeof guide !== 'undefined') { guide.learned = []; guide.snaps = []; enterStep(0); }
 }
 document.getElementById('reset').addEventListener('click', () => { audio(); resetParts(); });
 
@@ -974,8 +974,29 @@ function updateCues() {
   pathDots.count = n; pathDots.instanceMatrix.needsUpdate = true;
 }
 const guide = { i: 0, learned: [], doneT: 0, dirty: true, finished: false };
+// each step remembers how the bench looked when you arrived, so "Back a step" puts it back that way
+function snapshot() {
+  return { parts: parts.map(P => ({ P, x: P.x, z: P.z, th: P.th, mode: P.mode, world: P.world.clone(), scale: P.scale, layer: P.layer })),
+    joints: joints.map(J => ({ ...J, marker: null })), gears: [...gearPairs].map(([k, g]) => [k, { ...g }]), learned: [...guide.learned] };
+}
+function restore(S) {
+  for (const h of hands) { h.grab = null; }
+  scaleState = null;
+  for (const J of [...joints]) removeJoint(J);
+  for (const p of S.parts) { const P = p.P; P.x = p.x; P.z = p.z; P.th = p.th; P.mode = p.mode; P.world.copy(p.world); P.scale = p.scale; P.layer = p.layer; P.inspect = false; }
+  for (const j of S.joints) addJoint({ ...j, marker: null });
+  gearPairs = new Map(S.gears.map(([k, g]) => [k, { ...g }]));
+  guide.learned = [...S.learned];
+  if (typeof stackParts === 'function') stackParts();
+}
+function goBack() {
+  const i = Math.max(0, guide.i - 1);
+  if (guide.snaps && guide.snaps[i]) restore(guide.snaps[i]);
+  enterStep(i);
+}
 function enterStep(i) {
-  guide.i = Math.max(0, Math.min(STEPS.length, i)); guide.doneT = 0; guide.dirty = true; clearGhosts();
+  guide.i = Math.max(0, Math.min(STEPS.length, i));
+  guide.snaps = guide.snaps || []; guide.snaps[guide.i] = snapshot(); guide.snaps.length = guide.i + 1; guide.doneT = 0; guide.dirty = true; clearGhosts();
   guide.finished = guide.i >= STEPS.length;
   const s = STEPS[guide.i]; if (!s) return;
   if (s.enter) s.enter(); if (s.ghosts) s.ghosts();
@@ -1033,11 +1054,11 @@ function drawBoard() {
   x.fillText(`${VERSION} · sound ${as === 'running' ? 'on' : as === 'off' ? 'not started' : 'blocked'}${as === 'running' ? '' : ': tap the orange sound button on the bench'}`, pad, H - 36);
   boardTex.needsUpdate = true;
 }
-makeButton('back', -0.37, 0.27, () => enterStep(guide.i - 1));
+makeButton('back', -0.37, 0.27, () => goBack());
 makeButton('skip', -0.37, 0.21, () => { if (STEPS[guide.i]) enterStep(guide.i + 1); });
 boardCanvas.style.cssText = 'position:fixed;right:16px;top:16px;width:min(330px,42vw);border-radius:14px;pointer-events:none';
 document.body.appendChild(boardCanvas);
-document.getElementById('back').addEventListener('click', () => { audio(); enterStep(guide.i - 1); });
+document.getElementById('back').addEventListener('click', () => { audio(); goBack(); });
 document.getElementById('skip').addEventListener('click', () => { audio(); if (STEPS[guide.i]) enterStep(guide.i + 1); });
 
 // ---------- Meta design guidelines: feedback, comfort and safety helpers ----------
@@ -1267,5 +1288,6 @@ window.__ft = {
   trails: () => parts.map(P => P.trailPts.length),
   freeY: P => benchLocal(new THREE.Vector3().setFromMatrixPosition(P.world)).y,
   screen(x, y, z) { const v = benchWorld(x, y, z).project(camera); return [(v.x + 1) / 2 * innerWidth, (1 - v.y) / 2 * innerHeight]; }, pick(x, y, z) { const P = pickPart(benchWorld(x, y, z)); return P && P.id; },
+  goBack: () => goBack(),
   reset: resetParts, perf, perfStats, perfCanvas, guide, STEPS, enterStep, square: () => { const s = square(); return Object.fromEntries(Object.entries(s).map(([k, v]) => [k, v && v.id])); }
 };
